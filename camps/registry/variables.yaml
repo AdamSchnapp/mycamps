@@ -1,0 +1,15 @@
+variables :
+
+  air :
+    data_type : int16
+    OM__observedProperty : "StatPP__Data/Met/Temp/Temp"
+    long_name : "dry bulb temperature"
+    valid_min : -80
+    valid_max : 130
+    standard_name : "air_temperature"
+    units : "degF"
+    coordinates : "elev"
+  U_wind_speed_instant :
+    standard_name : "northward_wind"
+  V_wind_speed_instant :
+    standard_name : "eastward_wind"
