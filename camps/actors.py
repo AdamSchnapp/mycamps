@@ -6,6 +6,7 @@ from itertools import product
 from scipy import signal
 from copy import copy
 import camps
+from scipy.spatial import cKDTree
 
 
 actors = dict()
@@ -103,7 +104,7 @@ def smooth2d(a: xr.DataArray, dims=('lat', 'lon'), **kwargs) -> xr.DataArray:
 
 @actor
 def wind_speed_from_uv(a: None, *, u: camps.Variable, v: camps.Variable, datastore=None, **kwargs) -> xr.DataArray:
-    if a:
+    if a is not None:
         raise ValueError('actor wind_speed_from_uv cannot consume data')
 
     if not isinstance(u, camps.Variable):
@@ -111,7 +112,7 @@ def wind_speed_from_uv(a: None, *, u: camps.Variable, v: camps.Variable, datasto
     if not isinstance(v, camps.Variable):
         raise ValueError('v argument must be passed as a camps.Variable')
 
-    if 'U_wind' not in u.name:
+    if 'Uwind' not in u.name:
         raise ValueError(f'variable passed as u {u} is not u wind speed')
 
     if not datastore:
@@ -129,17 +130,67 @@ def wind_speed_from_uv(a: None, *, u: camps.Variable, v: camps.Variable, datasto
 
 @actor
 def to_netcdf(a: xr.DataArray, *, datastore=None, **kwargs):
-    if not datastore:
+    if datastore is None:
         raise ValueError('no datastore provided; so cannot determine where to write data')
     out_handle = datastore.out_handle(a)
-    a.to_netcdf(out_handle, compute=False, **kwargs)
+    a = a.to_netcdf(out_handle, compute=False, **kwargs)
     return a
 
 
 @actor
 def to_stations(data: xr.DataArray = None, stations: pd.DataFrame = None, **kwargs) -> xr.DataArray:
-    if not data:
+    '''
+    Return an xr.DataArray time series with station data from nearest grid cell.
+    Metadata attrs are adjusted according to camps metadata conventions.
+    '''
+    if data is None:
         raise ValueError('no data provided')
-    if not stations:
+    if stations is None:
         raise ValueError('no stations provided')
-    # transform gridded array to station array
+
+    xdim='x'
+    ydim='y'
+    lon = 'longitude'
+    lat = 'latitude'
+    stacked = data.stack(station=(xdim, ydim))  # squash the horizontal space dims into one
+    gridlonlat = np.column_stack((stacked[lon].data, stacked[lat].data))  # array of lon/lat pars of gridpoints
+    stationlonlat = np.column_stack((stations.lon, stations.lat))  # array of lon/lat pairs of stations
+
+    tree = cKDTree(gridlonlat)  # kdtree is fast search of nearest neighbor (lat/lon value-wise)
+    dist_ix = tree.query(stationlonlat)  # find the distance (degrees) and index of the nearest gridpoint to each station
+
+    station_array = stacked.isel(station=dist_ix[1])  # select station data based on index location
+
+    station_array = station_array.reset_index('station')  # remove the temporary multi-index (lon, lat) along the station dim
+
+    # configure station dataframe along the 'station' dimension (ordered integer index)
+    stations = stations.reset_index()
+    stations.index.set_names('station', inplace=True)
+
+    # put station metadata in place
+    station_array = station_array.assign_coords({'station_call': stations.call})
+    station_array = station_array.assign_coords({lat: stations.lat})
+    station_array = station_array.assign_coords({lon: stations.lon})
+    station_array = station_array.set_index(station='station_call')
+
+    if lon != xdim and lat != ydim:
+        station_array = station_array.drop([xdim,ydim])
+
+    return station_array
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

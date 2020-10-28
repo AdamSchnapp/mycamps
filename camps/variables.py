@@ -71,12 +71,12 @@ class Variable(dict):
 #    OM__observedProperty: str = None
 #    SOSA__usedProcedure: list = None
     # possible dim variables are array dimensions when not part of variable name
-    dims_possible = ['reference_time',
-                    'lead_time',
-                    'pressure',
-                    'height',
-                    'duration',
-                    'threshold']
+#    dims_possible = ['reference_time',
+#                    'lead_time',
+#                    'pressure',
+#                    'height',
+#                    'duration',
+#                    'threshold']
     reference_time: pd.DatetimeIndex = DatetimeIndex()
     cycle: Number = None
     time: pd.DatetimeIndex = DatetimeIndex()
@@ -85,6 +85,7 @@ class Variable(dict):
     pressure: np.array = OneDArray()
     height: np.array = OneDArray()
     threshold: np.array = OneDArray()
+    SOSA_usedProcedure = None
 
     camps_multistep: camps.MultiStep = None  # this is the instruction set
 
@@ -120,5 +121,7 @@ class Variable(dict):
         if 'chunk' in kwargs:
             options['chunks'] = kwargs['chunk']
 
-        ds = xr.open_mfdataset(in_handle, concat_dim='default_time_coordinate_size', **options)
+        #ds = xr.open_mfdataset(in_handle, concat_dim='default_time_coordinate_size', **options)
+        ds = xr.open_dataset(in_handle, **options)
+
         return ds.camps[self]

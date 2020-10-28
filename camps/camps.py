@@ -61,7 +61,7 @@ def reference_time(data: xr.DataArray, var: camps.Variable) -> xr.DataArray:
     if var.reference_time is None:
         return data
     else:
-        return data.sel(referencetime=var.reference_time)
+        return data.sel(reference_time=var.reference_time)
 
 @filter
 def time(data: xr.DataArray, var: camps.Variable) -> xr.DataArray:
