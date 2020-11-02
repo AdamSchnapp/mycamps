@@ -121,7 +121,8 @@ class Variable(dict):
         if 'chunk' in kwargs:
             options['chunks'] = kwargs['chunk']
 
-        #ds = xr.open_mfdataset(in_handle, concat_dim='default_time_coordinate_size', **options)
+        print(in_handle)
+        #ds = xr.open_mfdataset(in_handle, parallel=True, **options)
         ds = xr.open_dataset(in_handle, **options)
 
         return ds.camps[self]

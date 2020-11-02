@@ -7,6 +7,7 @@ from scipy import signal
 from copy import copy
 import camps
 from scipy.spatial import cKDTree
+from camps.datastore import DataStore
 
 
 actors = dict()
@@ -29,14 +30,14 @@ def actor(method=None, **kwargs):
 
     return wrapper
 
-# Actors take primary input data as first argument (a) (Actors that don't consume data can expect None as input)
+
+# Actors take primary input data as first argument (a) (Actors that don't consume data may have optional arg input)
 # Actors may take options and perform a technique based on settings; IE different amount of smoothing
-# Actors may access data that is not provided as 'data' so long as the data accessed is determined by 'data'
-# Camps.Variables are actors that don't consume data and don't take options
-# Data handles may be provided via options when other data is needed
+# Actors may access data that is not provided as 'data' so long as the data accessed is determined by 'data' or is passed directly as a kwarg
+# Camps.Variables are actors that don't consume data. They may take options related to how to access... IE datastore, chunk
 # Actors are responsible for modifying metadata appropriately
-# Actors should perform heavy work lazily and return a lazy xr.DataArray whenever possible
-# The actor decorator registers actors in the module level dict actors so they may be accessed by name
+# Actors should perform heavy work lazily and return a lazy xr.DataArray (otherwise they would initialize computation)
+# The actor decorator registers actors in the module level dict actors so they may be accessed by name (or however we want to arganize these general computational routines)
 
 
 def smooth2d_array(a: np.array) -> np.array:
@@ -103,7 +104,7 @@ def smooth2d(a: xr.DataArray, dims=('lat', 'lon'), **kwargs) -> xr.DataArray:
 
 
 @actor
-def wind_speed_from_uv(a: None, *, u: camps.Variable, v: camps.Variable, datastore=None, **kwargs) -> xr.DataArray:
+def wind_speed_from_uv(a=None, *, u: camps.Variable, v: camps.Variable, datastore: DataStore, **kwargs) -> xr.DataArray:
     if a is not None:
         raise ValueError('actor wind_speed_from_uv cannot consume data')
 
@@ -118,79 +119,86 @@ def wind_speed_from_uv(a: None, *, u: camps.Variable, v: camps.Variable, datasto
     if not datastore:
         raise ValueError('no datastore provided; so cannot get U or V wind components')
 
-    u = u(datastore=datastore)
-    v = v(datastore=datastore)
     if 'chunk' in kwargs:
-        u = u.chunk(kwargs['chunk'])
-        v = v.chunk(kwargs['chunk'])
+        chunk = kwargs['chunk']
+    else:
+        chunk = dict()
+
+    u = u(datastore=datastore, chunk=chunk)
+    v = v(datastore=datastore, chunk=chunk)
+#    if 'chunk' in kwargs:
+#        u = u.chunk(kwargs['chunk'])
+#        v = v.chunk(kwargs['chunk'])
 
     speed = xr.apply_ufunc(lambda u, v: np.sqrt(u**2 + v**2), u, v, dask='allowed')
     speed.name = 'wind_speed'
     return speed
 
+
 @actor
-def to_netcdf(a: xr.DataArray, *, datastore=None, **kwargs):
-    if datastore is None:
-        raise ValueError('no datastore provided; so cannot determine where to write data')
+def to_netcdf(a: xr.DataArray, *, datastore: DataStore, **kwargs):
     out_handle = datastore.out_handle(a)
     a = a.to_netcdf(out_handle, compute=False, **kwargs)
     return a
 
 
 @actor
-def to_stations(data: xr.DataArray = None, stations: pd.DataFrame = None, **kwargs) -> xr.DataArray:
-    '''
-    Return an xr.DataArray time series with station data from nearest grid cell.
-    Metadata attrs are adjusted according to camps metadata conventions.
-    '''
-    if data is None:
-        raise ValueError('no data provided')
-    if stations is None:
-        raise ValueError('no stations provided')
+def to_stations(data: xr.DataArray, *, stations: pd.DataFrame) -> xr.DataArray:
 
     xdim='x'
     ydim='y'
-    lon = 'longitude'
-    lat = 'latitude'
-    stacked = data.stack(station=(xdim, ydim))  # squash the horizontal space dims into one
-    gridlonlat = np.column_stack((stacked[lon].data, stacked[lat].data))  # array of lon/lat pars of gridpoints
-    stationlonlat = np.column_stack((stations.lon, stations.lat))  # array of lon/lat pairs of stations
 
-    tree = cKDTree(gridlonlat)  # kdtree is fast search of nearest neighbor (lat/lon value-wise)
-    dist_ix = tree.query(stationlonlat)  # find the distance (degrees) and index of the nearest gridpoint to each station
+    ###################
+    # Prep the template
+    ###################
 
-    station_array = stacked.isel(station=dist_ix[1])  # select station data based on index location
+    da = data.copy()
 
-    station_array = station_array.reset_index('station')  # remove the temporary multi-index (lon, lat) along the station dim
+    # reshape action
+    da = da.stack(station=(xdim, ydim))
+    da = da.isel(station=np.arange(len(stations)))  # select appropriate stations
+    # end reshape action
 
-    # configure station dataframe along the 'station' dimension (ordered integer index)
-    stations = stations.reset_index()
-    stations.index.set_names('station', inplace=True)
+    def config_meta(da, xdim, ydim, stations):
+        da = da.reset_index('station') # remove the temorary multiindex
 
-    # put station metadata in place
-    station_array = station_array.assign_coords({'station_call': stations.call})
-    station_array = station_array.assign_coords({lat: stations.lat})
-    station_array = station_array.assign_coords({lon: stations.lon})
-    station_array = station_array.set_index(station='station_call')
+        da = da.reset_coords([xdim, ydim], drop=True) # remove x and y dimensions (may be lat/lon)
+        if 'latitude' in da.coords:
+            da = da.reset_coords(['latitude','longitude'], drop=True) # remove the lats and lons of the grid cells
 
-    if lon != xdim and lat != ydim:
-        station_array = station_array.drop([xdim,ydim])
+        # prep station coord with 'station' numeric index
+        stations = stations.reset_index()
+        stations.index.set_names('station', inplace=True)
+        # assign the new coords
+        da = da.assign_coords({'station': stations.call})
 
-    return station_array
+        # prep lat/lon coords with 'station' call index
+        stations = stations.set_index('call')
+        stations.index.set_names('station', inplace=True)
+        # assign the new coords
+        da = da.assign_coords({'latitude': stations.lat})
+        da = da.assign_coords({'longitude': stations.lon})
+        return da
 
+    da = config_meta(da, xdim, ydim, stations)
+    # end preping the template
 
+    def nearest_worker(da: xr.DataArray,* ,xdim ,ydim, stations) -> xr.DataArray:
+        da = da.stack(station=(xdim, ydim))  # squash the horizontal space dims into one
+        gridlonlat = np.column_stack((da['longitude'].data, da['latitude'].data))  # array of lon/lat pairs of gridpoints # not a lazy version of column_stack
+        stationlonlat = np.column_stack((stations.lon, stations.lat))  # array of lon/lat pairs of stations
 
+        tree = cKDTree(gridlonlat)  # kdtree is fast search of nearest neighbor (lat/lon value-wise)
+        dist_ix = tree.query(stationlonlat)  # find the distance (degrees) and index of the nearest gridpoint to each station
 
+        da = da.isel(station=dist_ix[1])
+        da = config_meta(da, xdim, ydim, stations)
+        return da
 
+    kwargs = dict()
+    kwargs['xdim'] = xdim
+    kwargs['ydim'] = ydim
+    kwargs['stations'] = stations
+    data = xr.map_blocks(nearest_worker, data, kwargs=kwargs, template=da)
 
-
-
-
-
-
-
-
-
-
-
-
+    return data
