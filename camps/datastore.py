@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import xarray as xr
 from pathlib import Path
 import os

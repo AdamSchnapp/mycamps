@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import xarray as xr
 # temporary utilities for putting camps nc files into more friendly metadata formats
 

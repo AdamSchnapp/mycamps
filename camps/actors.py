@@ -1,13 +1,16 @@
+#!/usr/bin/env python3
 from functools import wraps, partial
 import numpy as np
 import pandas as pd
 import xarray as xr
+import dask.delayed
 from itertools import product
 from scipy import signal
 from copy import copy
 import camps
 from scipy.spatial import cKDTree
 from camps.datastore import DataStore
+from typing import Union
 
 
 actors = dict()
@@ -40,7 +43,7 @@ def actor(method=None, **kwargs):
 # The actor decorator registers actors in the module level dict actors so they may be accessed by name (or however we want to arganize these general computational routines)
 
 
-def smooth2d_array(a: np.array) -> np.array:
+def smooth2d_array(a: np.array, **kwargs) -> np.array:
     '''
     Return two dimensional array with nine point smother applied.
     '''
@@ -49,7 +52,7 @@ def smooth2d_array(a: np.array) -> np.array:
     return a
 
 
-def smooth2d_block(a: xr.DataArray, dims=('lat', 'lon')) -> xr.DataArray:
+def smooth2d_block(da: xr.DataArray, dims, **kwargs) -> xr.DataArray:
     '''
     Return an xr.DataArray with a block of data smoothed along two dimensions.
     Input must be xr.DataArray object that is not lazy and not chunked.
@@ -58,134 +61,179 @@ def smooth2d_block(a: xr.DataArray, dims=('lat', 'lon')) -> xr.DataArray:
     like xr.DataArrays with numpy data.
     '''
 
-    two_d_axis, two_d_dims = zip(*[(i, dim) for i, dim in enumerate(a.dims) if dim in dims])
-
-    other_dims = [dim for dim in a.dims if dim not in two_d_dims]
-    other_dim_arrays = [a[dim].data for dim in other_dims]
+    other_dims = [dim for dim in da.dims if dim not in dims]
+    other_dim_arrays = [da[dim].data for dim in other_dims]
+    # iterate over all the 2d sections applying smoother
     for dim_values in product(*other_dim_arrays):
         loc = {k: v for k, v in zip(other_dims, dim_values)}
-        a.loc[loc] = smooth2d_array(a.loc[loc])
-    return a
+        da.loc[loc] = smooth2d_array(da.loc[loc], **kwargs)
+    return da
 
 
 @actor
-def smooth2d(a: xr.DataArray, dims=('lat', 'lon'), **kwargs) -> xr.DataArray:
+def smooth2d(da: Union[camps.Variable, xr.DataArray],
+             std_dims=('projection_x_coordinate', 'projection_y_coordinate'),
+             datastore: DataStore = None, chunks: dict = None,
+             **kwargs) -> xr.DataArray:
     '''
     Return an xr.DataArray smoothed along two dimensions.
     Works with both chunked(dask) and unchunked(numpy) data.
     Metadata attrs are adjusted according to camps metadata conventions.
     '''
 
-    if len(dims) != 2:
-        raise ValueError(f'dims {dims} is not length two')
+    if len(std_dims) != 2:
+        raise ValueError(f'std_dims {std_dims} is not length two')
 
-    two_d_axis, two_d_dims = zip(*[(i, dim) for i, dim in enumerate(a.dims) if dim in dims])
+    if isinstance(da, camps.Variable):
+        da = da(datastore=datastore, chunks=chunks, **kwargs)
+    else:
+        if chunks:
+            da = da.camps.chunk(chunks)
 
-    if len(two_d_axis) != 2:
-        raise ValueError(f'dims {dims} were not both in array {a}')
+    dim0, _ = da.camps.dim_ax_from_standard_name(std_dims[0])
+    dim1, _ = da.camps.dim_ax_from_standard_name(std_dims[1])
+    dims = (dim0, dim1)
+    kwargs['dims'] = dims  # kwargs are passed to smooth2d_block
 
-    if 'chunk' in kwargs:
-        a = a.chunk(kwargs['chunk'])
-        del kwargs['chunk']
+    for dim in dims:
+        n_chunks = da.camps.chunks_spanning_dim(dim)
+        if n_chunks > 1:
+            raise ValueError(f'Expected chunks spanning dim "{dim}" to be one, but was {n_chunks};'
+                             f' chunked data may not span dim "{dim}" with multiple chunks')
 
-    if a.chunks:
-        for axis, dim in zip(two_d_axis, two_d_dims):
-            len_dim = len(a.chunks[axis])
-            if len_dim > 1:
-                raise ValueError(f'Expected chunks spanning dim "{dim}" to be one, but was {len_dim};'
-                                 f' chunked data may not span dim "{dim}" with multiple chunks')
+    da = xr.map_blocks(smooth2d_block, da, kwargs=kwargs, template=da)
 
-    kwargs['dims'] = dims
-    a = xr.map_blocks(smooth2d_block, a, kwargs=kwargs, template=a)
+    da.attrs['smooth'] = 'smooth_9point'
 
-    a.attrs['smooth'] = 'smooth_9point'
-
-    return a
+    return da
 
 
 @actor
-def wind_speed_from_uv(a=None, *, u: camps.Variable, v: camps.Variable, datastore: DataStore, **kwargs) -> xr.DataArray:
-    if a is not None:
-        raise ValueError('actor wind_speed_from_uv cannot consume data')
+def wind_speed_from_uv(da=None, *, u: Union[camps.Variable, xr.DataArray],
+                       v: Union[camps.Variable, xr.DataArray],
+                       datastore: DataStore = None, chunks: dict = None, **kwargs) -> xr.DataArray:
+    ''' return wind speed data array created from U and V wind speed components'''
 
-    if not isinstance(u, camps.Variable):
-        raise ValueError('u argument must be passed as a camps.Variable')
-    if not isinstance(v, camps.Variable):
-        raise ValueError('v argument must be passed as a camps.Variable')
-
-    if 'Uwind' not in u.name:
-        raise ValueError(f'variable passed as u {u} is not u wind speed')
+    if da is not None:
+        raise ValueError('wind_speed_from_uv cannot consume data except for u and v')
 
     if not datastore:
         raise ValueError('no datastore provided; so cannot get U or V wind components')
 
-    if 'chunk' in kwargs:
-        chunk = kwargs['chunk']
-    else:
-        chunk = dict()
+    uv_options = dict(datastore=datastore)
+    if chunks:
+        uv_options['chunks'] = chunks
 
-    u = u(datastore=datastore, chunk=chunk)
-    v = v(datastore=datastore, chunk=chunk)
-#    if 'chunk' in kwargs:
-#        u = u.chunk(kwargs['chunk'])
-#        v = v.chunk(kwargs['chunk'])
+    if isinstance(u, camps.Variable):
+        u = u(**uv_options)
+    elif isinstance(u, xr.DataArray):
+        if chunks:
+            u = u.camps.chunk(chunks)
+    else:
+        raise ValueError('v argument must be passed as a camps.Variable or xr.DataArray')
+
+    if isinstance(v, camps.Variable):
+        v = v(**uv_options)
+    elif isinstance(u, xr.DataArray):
+        if chunks:
+            v = v.camps.chunk(chunks)
+    else:
+        raise ValueError('v argument must be passed as a camps.Variable or xr.DataArray')
+
+    # check that the passed u component is expected
+    #if u.attrs['standard_name'] != 'eastward_wind':
+    #   raise ValueError(f'variable passed as u {u} is not eastward_wind')
+    # check that the passed v component is expected and agrees with u
+    #if v.attrs['standard_name'] != 'northward_wind':
+    #   raise ValueError(f'variable passed as v {v} is not northward_wind')
 
     speed = xr.apply_ufunc(lambda u, v: np.sqrt(u**2 + v**2), u, v, dask='allowed')
-    speed.name = 'wind_speed'
+    # Create metadata accordingly
+    #speed.name = 'wind_speed'
+    speed.attrs['standard_name'] = 'wind_speed'
     return speed
 
 
 @actor
-def to_netcdf(a: xr.DataArray, *, datastore: DataStore, **kwargs):
-    out_handle = datastore.out_handle(a)
-    a = a.to_netcdf(out_handle, compute=False, **kwargs)
-    return a
+def to_netcdf(da: Union[camps.Variable, xr.DataArray], *, datastore: DataStore = None,
+              chunks: dict = None, **kwargs):
+
+    if isinstance(da, camps.Variable):
+        da = da(datastore=datastore, chunks=chunks, **kwargs)
+    elif isinstance(da, xr.DataArray):
+        if chunks:
+            da = da.camps.chunk(chunks)
+
+    out_handle = datastore.out_handle(da)
+
+    da = da.to_netcdf(out_handle, compute=False, **kwargs)
+    return da
 
 
 @actor
-def to_stations(data: xr.DataArray, *, stations: pd.DataFrame) -> xr.DataArray:
+def to_stations(da: Union[camps.Variable, xr.DataArray], *, stations: pd.DataFrame,
+                datastore: DataStore = None, chunks: dict = None, **kwargs) -> xr.DataArray:
 
-    xdim='x'
-    ydim='y'
+    if isinstance(da, camps.Variable):
+        da = da(datastore=datastore, chunks=chunks, **kwargs)
+    elif isinstance(da, xr.DataArray):
+        if chunks:
+            da = da.camps.chunk(chunks)
+
+    try:
+        xdim, _ = da.camps.dim_ax_from_standard_name('projection_x_coordinate')
+        ydim, _ = da.camps.dim_ax_from_standard_name('projection_y_coordinate')
+    except ValueError:
+        xdim, _ = da.camps.dim_ax_from_standard_name('longitude')
+        ydim, _ = da.camps.dim_ax_from_standard_name('latitude')
+
+    # need to know the lat and lon coord names
+    lon = da.camps.coord_name_from_standard_name('longitude')
+    lat = da.camps.coord_name_from_standard_name('latitude')
 
     ###################
     # Prep the template
     ###################
 
-    da = data.copy()
+    da_template = da.copy()
 
     # reshape action
-    da = da.stack(station=(xdim, ydim))
-    da = da.isel(station=np.arange(len(stations)))  # select appropriate stations
+    da_template = da_template.stack(station=(xdim, ydim))
+    da_template = da_template.isel(station=np.arange(len(stations)))  # select appropriate stations
     # end reshape action
 
     def config_meta(da, xdim, ydim, stations):
         da = da.reset_index('station') # remove the temorary multiindex
 
         da = da.reset_coords([xdim, ydim], drop=True) # remove x and y dimensions (may be lat/lon)
-        if 'latitude' in da.coords:
-            da = da.reset_coords(['latitude','longitude'], drop=True) # remove the lats and lons of the grid cells
+        if lat in da.coords:
+            da = da.reset_coords([lat, lon], drop=True) # remove the lats and lons of the grid cells
 
         # prep station coord with 'station' numeric index
         stations = stations.reset_index()
         stations.index.set_names('station', inplace=True)
         # assign the new coords
-        da = da.assign_coords({'station': stations.call})
+        da = da.assign_coords({'platform_id': stations.platform_id})
 
-        # prep lat/lon coords with 'station' call index
-        stations = stations.set_index('call')
-        stations.index.set_names('station', inplace=True)
-        # assign the new coords
+        # prep lat/lon coords with 'station' call index  ## previously I was indexing by platform_id, but platform id is not strictly a cf "coordinate variable" based on NUG because it is not numeric
+        #stations = stations.set_index('platform_id')
+        #stations.index.set_names('station', inplace=True)
+
+        # assign the new coords with arbitrary integer index
         da = da.assign_coords({'latitude': stations.lat})
         da = da.assign_coords({'longitude': stations.lon})
+
+        # drop the arbitrary station dim/index coordinate (for cf NUG conventions... station is an arbitrary coordinate described by auxiliarry coordinate vraiable platform_id)
+        da = da.reset_index('station', drop=True)
+
         return da
 
-    da = config_meta(da, xdim, ydim, stations)
+    da_template = config_meta(da_template, xdim, ydim, stations)
     # end preping the template
 
     def nearest_worker(da: xr.DataArray,* ,xdim ,ydim, stations) -> xr.DataArray:
         da = da.stack(station=(xdim, ydim))  # squash the horizontal space dims into one
-        gridlonlat = np.column_stack((da['longitude'].data, da['latitude'].data))  # array of lon/lat pairs of gridpoints # not a lazy version of column_stack
+        gridlonlat = np.column_stack((da[lon].data, da[lat].data))  # array of lon/lat pairs of gridpoints # not a lazy version of column_stack
         stationlonlat = np.column_stack((stations.lon, stations.lat))  # array of lon/lat pairs of stations
 
         tree = cKDTree(gridlonlat)  # kdtree is fast search of nearest neighbor (lat/lon value-wise)
@@ -199,6 +247,6 @@ def to_stations(data: xr.DataArray, *, stations: pd.DataFrame) -> xr.DataArray:
     kwargs['xdim'] = xdim
     kwargs['ydim'] = ydim
     kwargs['stations'] = stations
-    data = xr.map_blocks(nearest_worker, data, kwargs=kwargs, template=da)
+    data = xr.map_blocks(nearest_worker, da, kwargs=kwargs, template=da_template)
 
     return data

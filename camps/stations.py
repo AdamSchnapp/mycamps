@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import logging
 from dataclasses import dataclass
 import pandas as pd
@@ -30,9 +31,9 @@ def to_degrees_east(lon):
 
 def from_mos2ktbl(tbl):
     df = pd.read_csv(tbl, sep=':', usecols=[0,1,2,3,6,7,18],
-            names=['call','link','name','state','lat','lon','comment'], quoting=3)
+            names=['platform_id','link','name','state','lat','lon','comment'], quoting=3)
             # quoting = 3 prevents unclosed quotes from blocking parse on sep and \n
-    df['call'] = df['call'].str.strip()
+    df['platform_id'] = df['platform_id'].str.strip()
     df['lat'] = df['lat'].apply(south_to_negative)
     df['lon'] = df['lon'].apply(west_to_negative)
     return df
@@ -41,7 +42,7 @@ core30 = ['KATL','KLAX','KORD','KDFW','KDEN','KJFK','KSFO','KSEA','KLAS','KMCO',
           'KEWR','KCLT','KPHX','KIAH','KMIA','KBOS','KMSP','KFLL','KDTW','KPHL',
           'KLGA','KBWI','KSLC','KSAN','KIAD','KDCA','KMDW','KTPA','KPDX','PHNL']
 
-
+# probably don't need a class
 #class Stations:
 ##    ''' station/point data container '''
 ##    all : pd.DataFrame

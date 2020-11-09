@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 from camps.helpers import UniqueValDict, ClassRegistry, removeprefix
 from abc import ABC, abstractmethod
 import datetime

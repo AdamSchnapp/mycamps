@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 from dataclasses import dataclass
 import numpy as np
 import xarray as xr
@@ -6,6 +7,9 @@ import pandas as pd
 import datetime
 import camps
 from camps.registry import registry
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class Validator:
@@ -23,36 +27,78 @@ class Validator:
 class DatetimeIndex(Validator):
 
     def __set__(self, obj, value):
-        if isinstance(value, pd.DatetimeIndex):
-            pass
-        elif isinstance(value, datetime.datetime):
+        '''
+        >>> class Thing:
+        ...     time = DatetimeIndex()
+        >>> obj = Thing()
+        >>> obj.time = '2020-01-01'
+        >>> obj.time
+        DatetimeIndex(['2020-01-01'], dtype='datetime64[ns]', freq=None)
+        >>> obj.time = datetime.datetime(year=2020, month=5, day=5)
+        >>> obj.time
+        DatetimeIndex(['2020-05-05'], dtype='datetime64[ns]', freq=None)
+        >>> obj.time = ["2020-01-01", "2020-01-02"]
+        >>> obj.time
+        DatetimeIndex(['2020-01-01', '2020-01-02'], dtype='datetime64[ns]', freq=None)
+        >>> obj.time = [datetime.datetime(2020, 1, 1, 12), datetime.datetime(2020, 1, 2, 12)]
+        >>> obj.time
+        DatetimeIndex(['2020-01-01 12:00:00', '2020-01-02 12:00:00'], dtype='datetime64[ns]', freq=None)
+        >>> obj.time = pd.date_range(start='2020-01-01', freq='1D', periods=3)
+        >>> obj.time
+        DatetimeIndex(['2020-01-01', '2020-01-02', '2020-01-03'], dtype='datetime64[ns]', freq='D')
+        >>> obj.time = {'start': '2020-01-01', 'end': '2020-01-01 06' , 'freq': '6H' }
+        >>> obj.time
+        DatetimeIndex(['2020-01-01 00:00:00', '2020-01-01 06:00:00'], dtype='datetime64[ns]', freq='6H')
+        '''
+
+        try:
             value = pd.DatetimeIndex(value)
-        else:
-            value = pd.date_range(*value)
+        except TypeError:
+            value = pd.DatetimeIndex([pd.to_datetime(value)])
+        except ValueError:
+            value = pd.date_range(**value)
         setattr(obj, self.private_name, value)
 
 
 class TimedeltaIndex(Validator):
 
     def __set__(self, obj, value):
-        if isinstance(value, pd.TimedeltaIndex):
-            pass
-        elif isinstance(value, datetime.timedelta):
+        '''
+        >>> class Thing:
+        ...     lead_time = TimedeltaIndex()
+        >>> obj = Thing()
+        >>> obj.lead_time = '1 day'
+        >>> obj.lead_time
+        Timedelta('1 days 00:00:00')
+        >>> obj.lead_time = datetime.timedelta(minutes=15)
+        >>> obj.lead_time
+        Timedelta('0 days 00:15:00')
+        >>> obj.lead_time = ['1 hours', '2 hour']
+        >>> obj.lead_time
+        TimedeltaIndex(['0 days 01:00:00', '0 days 02:00:00'], dtype='timedelta64[ns]', freq=None)
+        >>> obj.lead_time = pd.timedelta_range(start=0, end='2 hour', freq='1H')
+        >>> obj.lead_time
+        TimedeltaIndex(['0 days 00:00:00', '0 days 01:00:00', '0 days 02:00:00'], dtype='timedelta64[ns]', freq='H')
+        >>> obj.lead_time = {'start':'1 day', 'freq':'1D', 'periods':5}
+        >>> obj.lead_time
+        TimedeltaIndex(['1 days', '2 days', '3 days', '4 days', '5 days'], dtype='timedelta64[ns]', freq='D')
+        '''
+
+        try:
             value = pd.TimedeltaIndex(value)
-        else:
-            value = pd.timedelta_range(*value)
+        except TypeError:
+            value = pd.TimedeltaIndex([pd.Timedelta(value)])
+        except ValueError:
+            value = pd.timedelta_range(**value)
         setattr(obj, self.private_name, value)
 
-class OneDArray(Validator):
+
+class PdIndex(Validator):
 
     def __set__(self, obj, value):
-        if isinstance(value, np.ndarray):
-            pass
-        else:
-            value = np.array(value)
-        if value.ndim != 1:
-            raise ValueError(f'{value} is not one dimension')
+        value = pd.Index(value)
         setattr(obj, self.private_name, value)
+
 
 @dataclass(init=False)
 class Variable(dict):
@@ -77,14 +123,14 @@ class Variable(dict):
 #                    'height',
 #                    'duration',
 #                    'threshold']
-    reference_time: pd.DatetimeIndex = DatetimeIndex()
+    forecast_reference_time: pd.DatetimeIndex = DatetimeIndex()
     cycle: Number = None
     time: pd.DatetimeIndex = DatetimeIndex()
     lead_time: pd.TimedeltaIndex = TimedeltaIndex()
     duration: pd.TimedeltaIndex = TimedeltaIndex()
-    pressure: np.array = OneDArray()
-    height: np.array = OneDArray()
-    threshold: np.array = OneDArray()
+    pressure = PdIndex()
+    height = PdIndex()
+    threshold = PdIndex()
     SOSA_usedProcedure = None
 
     camps_multistep: camps.MultiStep = None  # this is the instruction set
@@ -105,9 +151,9 @@ class Variable(dict):
         if data:
             raise ValueError('Variable calls do not take data')  # Variables behave as actors that don't take inputs
 
-        if out:
-            if not out_handle:
-                out_handle = datastore.out_handle(self)
+#        if out:
+#            if not out_handle:
+#                out_handle = datastore.out_handle(self)
         if not in_handle:
             if datastore:
                 in_handle = datastore.in_handle(self)
@@ -119,10 +165,26 @@ class Variable(dict):
 
         options = dict()
         if 'chunk' in kwargs:
-            options['chunks'] = kwargs['chunk']
+            # pre open dataset to determine dims that are to be chunked
+            pre = xr.open_dataset(in_handle)
+            var_name = pre.camps.var_name(self)
+            options['chunks'] = pre[var_name].camps.chunk_dict_from_std(kwargs['chunk'])
+            pre.close()
+            # always use open_mfdataset when chunk included  # mf dataset seems to incur some overhead when accessing single files
+            if len(options['chunks']) == 0:
+                logger.warning('Opening up dataset(s) as a dask array without chunking; things may go wrong or be slow')
+            ds = xr.open_mfdataset(in_handle, **options)
 
-        print(in_handle)
-        #ds = xr.open_mfdataset(in_handle, parallel=True, **options)
-        ds = xr.open_dataset(in_handle, **options)
+        else:
+            # always use open_dataset when chunk ommited
+            logger.info('Opening up dataset without chunking; computation might perfporm actively from here as data will be numpy arrays until chunked')
+            ds = xr.open_dataset(in_handle, **options)
 
-        return ds.camps[self]
+        a = ds.camps[self]  # select array of interest ; this applies filters/selection based on metadata attached to self
+
+        return a
+
+
+if __name__ == "__main__":
+    import doctest
+    doctest.testmod()
