@@ -146,7 +146,7 @@ class Variable(dict):
         v.update(registry['variables'][reg_name])
         return v
 
-    def __call__(self, data=None, *, datastore=None, in_handle=None, out_handle=None, out=False, **kwargs):
+    def __call__(self, data=None, *, datastore=None, in_handle=None, out_handle=None, out=False, chunks: dict=None, **kwargs):
         ''' Variable behaves like an actor; call will yield lazy data, but does not consume data like other actors '''
         if data:
             raise ValueError('Variable calls do not take data')  # Variables behave as actors that don't take inputs
@@ -164,13 +164,13 @@ class Variable(dict):
                 # return data/access to lazy data
 
         options = dict()
-        if 'chunk' in kwargs:
+        if chunks:
             # pre open dataset to determine dims that are to be chunked
             pre = xr.open_dataset(in_handle)
             var_name = pre.camps.var_name(self)
-            options['chunks'] = pre[var_name].camps.chunk_dict_from_std(kwargs['chunk'])
+            options['chunks'] = pre[var_name].camps.chunk_dict_from_std(chunks)
             pre.close()
-            # always use open_mfdataset when chunk included  # mf dataset seems to incur some overhead when accessing single files
+            # always use open_mfdataset when chunks included  # mf dataset seems to incur some overhead when accessing single files
             if len(options['chunks']) == 0:
                 logger.warning('Opening up dataset(s) as a dask array without chunking; things may go wrong or be slow')
             ds = xr.open_mfdataset(in_handle, **options)

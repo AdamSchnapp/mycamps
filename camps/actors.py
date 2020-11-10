@@ -141,15 +141,15 @@ def wind_speed_from_uv(da=None, *, u: Union[camps.Variable, xr.DataArray],
         raise ValueError('v argument must be passed as a camps.Variable or xr.DataArray')
 
     # check that the passed u component is expected
-    #if u.attrs['standard_name'] != 'eastward_wind':
-    #   raise ValueError(f'variable passed as u {u} is not eastward_wind')
+    if u.attrs['standard_name'] != 'eastward_wind':
+       raise ValueError(f'variable passed as u {u} is not eastward_wind')
     # check that the passed v component is expected and agrees with u
-    #if v.attrs['standard_name'] != 'northward_wind':
-    #   raise ValueError(f'variable passed as v {v} is not northward_wind')
+    if v.attrs['standard_name'] != 'northward_wind':
+       raise ValueError(f'variable passed as v {v} is not northward_wind')
 
     speed = xr.apply_ufunc(lambda u, v: np.sqrt(u**2 + v**2), u, v, dask='allowed')
     # Create metadata accordingly
-    #speed.name = 'wind_speed'
+    speed.name = 'wind_speed'
     speed.attrs['standard_name'] = 'wind_speed'
     return speed
 
@@ -220,8 +220,10 @@ def to_stations(da: Union[camps.Variable, xr.DataArray], *, stations: pd.DataFra
         #stations.index.set_names('station', inplace=True)
 
         # assign the new coords with arbitrary integer index
-        da = da.assign_coords({'latitude': stations.lat})
-        da = da.assign_coords({'longitude': stations.lon})
+        da = da.assign_coords({'lat': stations.lat})
+        da.lat.attrs['standard_name'] = 'latitude'
+        da = da.assign_coords({'lon': stations.lon})
+        da.lon.attrs['standard_name'] = 'longitude'
 
         # drop the arbitrary station dim/index coordinate (for cf NUG conventions... station is an arbitrary coordinate described by auxiliarry coordinate vraiable platform_id)
         da = da.reset_index('station', drop=True)
