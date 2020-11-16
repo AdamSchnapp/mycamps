@@ -72,7 +72,7 @@ def smooth2d_block(da: xr.DataArray, dims, **kwargs) -> xr.DataArray:
 
 @actor
 def smooth2d(da: Union[camps.Variable, xr.DataArray],
-             std_dims=('projection_x_coordinate', 'projection_y_coordinate'),
+             dims=('projection_x_coordinate', 'projection_y_coordinate'),
              datastore: DataStore = None, chunks: dict = None,
              **kwargs) -> xr.DataArray:
     '''
@@ -81,8 +81,8 @@ def smooth2d(da: Union[camps.Variable, xr.DataArray],
     Metadata attrs are adjusted according to camps metadata conventions.
     '''
 
-    if len(std_dims) != 2:
-        raise ValueError(f'std_dims {std_dims} is not length two')
+    if len(dims) != 2:
+        raise ValueError(f'dims {dims} is not length two')
 
     if isinstance(da, camps.Variable):
         da = da(datastore=datastore, chunks=chunks, **kwargs)
@@ -90,8 +90,8 @@ def smooth2d(da: Union[camps.Variable, xr.DataArray],
         if chunks:
             da = da.camps.chunk(chunks)
 
-    dim0, _ = da.camps.dim_ax_from_standard_name(std_dims[0])
-    dim1, _ = da.camps.dim_ax_from_standard_name(std_dims[1])
+    dim0, _ = da.camps.dim_ax_from_standard_name(dims[0])
+    dim1, _ = da.camps.dim_ax_from_standard_name(dims[1])
     dims = (dim0, dim1)
     kwargs['dims'] = dims  # kwargs are passed to smooth2d_block
 
@@ -242,6 +242,7 @@ def to_stations(da: Union[camps.Variable, xr.DataArray], *, stations: pd.DataFra
         dist_ix = tree.query(stationlonlat)  # find the distance (degrees) and index of the nearest gridpoint to each station
 
         da = da.isel(station=dist_ix[1])
+        # still need to determine which stations should be missing as aren't covered by grid
         da = config_meta(da, xdim, ydim, stations)
         return da
 
