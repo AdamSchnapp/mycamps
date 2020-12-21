@@ -3,6 +3,7 @@ import xarray as xr
 from pathlib import Path
 import os
 import camps
+from camps.names import scheme
 
 #datastore = None
 #DEFAULT_NAME_SCHEME = '1'
@@ -19,7 +20,7 @@ class DataStore:
             does it search for data?
     '''
 
-    def __init__(self, **kwargs):
+    def __init__(self, scheme=scheme, out_handle=None, in_handle=None, **kwargs):
         ''' initialize datastore from configuration '''
         ''' let configuration inform how/where new data is stored
                 how:
@@ -49,15 +50,46 @@ class DataStore:
         self.config = dict()
         self.config.update(kwargs)
         self.init_kwargs = kwargs
+        self.scheme = scheme
+        if in_handle:
+            self.in_handle_ = os.path.abspath(os.path.expanduser(in_handle))
+        if out_handle:
+            self.out_handle_ = os.path.abspath(os.path.expanduser(out_handle))
+        print(self.scheme)
 
     def in_handle(self, var: camps.Variable):
         ''' Discover variable data lives based on configuration '''
 #        from urllib.request import urlretrieve
 #        urlretrieve('https://github.com/pydata/xarray-data/raw/master/air_temperature.nc', 'data.nc')
-        return self.config['in_handle']
+        if self.in_handle_:
+            f = self.in_handle_
+        else:
+            f = 'out_data1.nc'
+
+        return f
 
     def out_handle(self, var: camps.Variable):
-        return 'out_data.nc'
+
+        #f = self.file_from_var(self, var: camps.Variable)
+        if self.out_handle_:
+            f = self.out_handle_
+        else:
+            f = 'out_data1.nc'
+        # if out_file does not yet exist, create base camps cf file
+        if not os.path.exists(f):
+            print(f'creating to file {f}')
+            # create camps cf file with variable naming scheme
+            from camps.names import scheme # for now just use a scheme.
+            self.scheme.to_netcdf(f)
+        #f = self.file_from_var(self, var: camps.Variable)
+        # if out_file does not yet exist, create base camps cf file
+
+        return f
+
+    def scheme(self, var: camps.Variable):
+        ''' based on variable and datastore configuration, return a name scheme
+        '''
+        return scheme
 
     def __repr__(self):
         ''' show how datastore was initialized '''
@@ -103,3 +135,7 @@ class DataStore:
 #        ds.atrrs['camps_var_name_scheme_version'] = name_scheme
 #        ds['camps_var_name_scheme'] = camps.names.var_name_schemes[name_scheme]
 #        return ds
+
+def create_new_cf(f, scheme):
+    ''' create a new camps cf file on disk '''
+    scheme.var.to_netcdf(f)

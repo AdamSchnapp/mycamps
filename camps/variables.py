@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 class Validator:
     def __set_name__(self, owner, name):
         self.private_name = f'_{name}'
+        self.name = name
 
     def __get__(self, obj, objtype=None):
         try:
@@ -58,6 +59,7 @@ class DatetimeIndex(Validator):
         except ValueError:
             value = pd.date_range(**value)
         setattr(obj, self.private_name, value)
+        obj.meta_filters_.append(self.name)
 
 
 class TimedeltaIndex(Validator):
@@ -91,13 +93,19 @@ class TimedeltaIndex(Validator):
         except ValueError:
             value = pd.timedelta_range(**value)
         setattr(obj, self.private_name, value)
+        obj.meta_filters_.append(self.name)
 
 
 class PdIndex(Validator):
 
     def __set__(self, obj, value):
+        try:
+            value = pd.Index(value)
+        except TypeError:
+            value = pd.Index([value])
         value = pd.Index(value)
         setattr(obj, self.private_name, value)
+        obj.meta_filters_.append(self.name)
 
 
 @dataclass(init=False)
@@ -106,7 +114,7 @@ class Variable(dict):
     Variable instances are containers for variable metadata.
     '''
 
-    name: str
+    name: str = None
     long_name: str = None
     standard_name: str = None
     data_type: str = None
@@ -123,22 +131,39 @@ class Variable(dict):
 #                    'height',
 #                    'duration',
 #                    'threshold']
-    forecast_reference_time: pd.DatetimeIndex = DatetimeIndex()
-    cycle: Number = None
+    reference_time: pd.DatetimeIndex = DatetimeIndex()
+    reference_time_of_day: pd.TimedeltaIndex = TimedeltaIndex()
+    lead_time: pd.TimedeltaIndex = TimedeltaIndex()
     time: pd.DatetimeIndex = DatetimeIndex()
+    time_of_day: pd.TimedeltaIndex = TimedeltaIndex()
     lead_time: pd.TimedeltaIndex = TimedeltaIndex()
     duration: pd.TimedeltaIndex = TimedeltaIndex()
     pressure = PdIndex()
     height = PdIndex()
+    latitude: pd.Index = PdIndex()
+    longitude: pd.Index = PdIndex()
     threshold = PdIndex()
-    SOSA_usedProcedure = None
+    SOSA__usedProcedure = None
+    observed_property: pd.Index = PdIndex()
 
     camps_multistep: camps.MultiStep = None  # this is the instruction set
 
-    def __init__(self, name):
+    @property
+    def reference_time_of_day(self) -> np.ndarray:  # cycle
+        if self.reference_time:
+            return np.unique(dates.time)
+
+#    @property
+#    def time_of_day(self) -> np.ndarray:
+#        if self.time:
+#            return np.unique(dates.time)
+
+
+    def __init__(self, *args, **kwargs):
         super().__init__()
         self.__dict__ = self
-        self.name = name
+        self.meta_filters_ = list()
+        #self.name = name
 
     @classmethod
     def from_registry(cls, reg_name: str):
@@ -157,9 +182,10 @@ class Variable(dict):
         if not in_handle:
             if datastore:
                 in_handle = datastore.in_handle(self)
-                print(in_handle)
+                print(f'in_handle: {in_handle}')
             else:
                 # case where no input provided; maybe can be created out of this air!
+                raise ValueError("in_handle can't be discovered")
                 pass  # invoke instruction to try creating without inputs
                 # return data/access to lazy data
 
@@ -168,7 +194,7 @@ class Variable(dict):
             # pre open dataset to determine dims that are to be chunked
             pre = xr.open_dataset(in_handle)
             var_name = pre.camps.var_name(self)
-            options['chunks'] = pre[var_name].camps.chunk_dict_from_std(chunks)
+            options['chunks'] = pre[var_name].camps.chunks_dict(chunks)
             pre.close()
             # always use open_mfdataset when chunks included  # mf dataset seems to incur some overhead when accessing single files
             if len(options['chunks']) == 0:

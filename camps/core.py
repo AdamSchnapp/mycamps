@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 import cf_xarray
 import xarray as xr
+import pandas as pd
 from camps.variables import Variable
-from camps.names import name_from_var_and_scheme
+from camps.names import name_from_var_and_scheme, VarNameScheme
 import camps
+from camps.meta import meta, meta_pieces
+import os
 from collections.abc import Iterable
+from dask.base import tokenize
 
 @xr.register_dataset_accessor("camps")
 class CampsDataset:
@@ -16,8 +20,11 @@ class CampsDataset:
     def var_name(self, var):
         if isinstance(var, camps.Variable):
             print(f'producing variable name based on variable name scheme on dataset: {var.name}')
-            return name_from_var_and_scheme(var, None)  #  change None to be the scheme on the file once implemented
-            # create Variable name from Dataset name scheme
+            scheme = VarNameScheme.from_dataset(self._obj)
+            print(f'scheme: {scheme}')
+            name = name_from_var_and_scheme(var, scheme)  #  change None to be the scheme on the file once implemented
+            print(f'name based on scheme: {name}')
+            return name
 
     def __contains__(self, obj):
         if isinstance(obj, camps.Variable):
@@ -33,9 +40,39 @@ class CampsDataset:
         else:
             return self._obj.cf[var]
 
+    @property
+    def name_scheme(self):
+        return VarNameScheme.from_dataset(self._obj)
+
+#class Time:
+#    def __get__(self, obj, objtype=None):
+#        meta_piece = meta_pieces['time']
+#        try:
+#            return obj._obj[meta_piece.coord_name(obj._obj)]
+#        except MayBeDerivedError:
+#            print('handle trying to compute via meta piece')
+
+class Coord:
+    def __set_name__(self, owner, name):
+        #self.private_name = f'_{name}'
+        self.name = name
+
+    def __get__(self, obj, objtype=None):
+        coord_name = meta_pieces[self.name].coord_name(obj._obj)
+        if coord_name:
+            return obj._obj[coord_name]
+
 @xr.register_dataarray_accessor("camps")
 class CampsDataarray:
     ''' extend xarray DataArray functionality '''
+    #time = Time()
+    reference_time = Coord()
+    lead_time = Coord()
+    latitude = Coord()
+    longitude = Coord()
+    x = Coord()
+    y = Coord()
+    z = Coord()
 
     def __init__(self, xarray_obj):
         self._obj = xarray_obj
@@ -48,55 +85,154 @@ class CampsDataarray:
 
     def select(self, var):
         ''' Return selection of variable from DataArray as DataArray '''
-        a = filters[0](self._obj, var)
+        #filters = list(meta_pieces.values())
+        filters = [meta_pieces[meta] for meta in var.meta_filters_]
+        a = filters[0].select(self._obj, var)
         for filter in filters[1:]:
-            a = filter(a, var)
+            a = filter.select(a, var)
         return a
 
-    def dim_ax_from_standard_name(self, standard_name) -> tuple:
+    def dim_ax(self, camps_name) -> tuple:
         # return a tuple with dimension name (str) and axis (int) of the array
 
+        name = getattr(self._obj.camps, camps_name).name
         for ix, dim_name in enumerate(self._obj.dims):
 
-            if self._obj[dim_name].attrs['standard_name'] == standard_name:  # let lack of standard name be error
+            if dim_name == name:
                 return dim_name, ix
 
         raise ValueError(f'No dimension exists with standard_name: {standard_name}')
 
 #   cf_xarray has access by standard name for some names
-    def coord_name_from_standard_name(self, standard_name) -> str:
+    def coord_name_from_attr_(self, attr_key, attr_val) -> str:
+        ''' return the name of array coordinate based on attribute key and val '''
+        coord_return = None
         for coord in self._obj.coords:
             try:
-                if self._obj[coord].attrs['standard_name'] == standard_name:
-                    return coord
+                if self._obj[coord].attrs[attr_key] == attr_val:
+                    if coord_return:
+                        raise ValueError('Multiple coords exist with {attr_key}: {attr_val}')
+                    coord_return = coord
             except KeyError:
-                pass  # forgive coords that don't have 'standard_name' attribute
+                pass  # pass by coords that don't have attr_key
 
-        raise ValueError(f'No coordinate exists with standard_name: {standard_name}')
+        if coord_return:
+            return coord_return
+
+        raise KeyError(f'No coordinate exists with {attr_key}: {attr_val}')
 
 
-    def chunks_spanning_dim(self, dim_name) -> int:
-        # return number of chunks that span the array in the dim_name direction
+#    def is_coord(self, metagroup: str):
+#        m = meta[metagroup]
+#        if 'cf_attr' in m:
+#            for attr in m['cf_attr']:
+#                for coord in self._obj.coords:
+#                #    print(self._obj[coord].attrs[attr.keys()[0]])
+#                    if self._obj[coord].attrs[attr.keys()[0]]:
+#                        pass
+#        #m = meta[metapiece]
+
+    def nchunks_spanning_dim(self, camps_name) -> int:
+        # return number of chunks that span the array in the dim_name direction, where dim_name is camps meta vocab
+        dim_name = getattr(self._obj.camps, camps_name).name
         if self._obj.chunks is None:
             return 1   # the dataset is not chunked therefore the whole array can be considered as one chunk
         ax = self._obj.dims.index(dim_name)
         return len(self._obj.chunks[ax])
 
-    def chunk_dict_from_std(self, chunk: dict) -> dict:
-        # return chunk dictionary
-        # if dims expressed in chunk dict are not dims, attempt to map them to dim names based on standard_name
-        new_chunk = dict()
-        for dim, per_chunk in chunk.items():
-            if dim not in self._obj.dims:
-                dim, _ = self.dim_ax_from_standard_name(dim)
-            new_chunk[dim] = per_chunk
-        return new_chunk
 
-#   cf_xarray has similar functionality, but looks limited
     def chunk(self, chunk: dict) -> xr.DataArray:
-        # return chunked DataArray
-        # if dims expressed in chunk are not dims, attempt to map them to dim names based on standard_name
-        return self._obj.chunk(self.chunk_dict_from_std(chunk))
+        # return chunked DataArray based on camps meta vocabulary
+        chunk_dict = dict()
+        for k, v in chunk.items():
+            coord = getattr(self._obj.camps, k)
+            chunk_dict[coord.name] = v
+        return self._obj.chunk(chunk_dict)
+
+    def chunks_dict(self, chunk: dict) -> xr.DataArray:
+        # return dict that can be used for chunking based on camps meta vocabulary
+        chunk_dict = dict()
+        for k, v in chunk.items():
+            coord = getattr(self._obj.camps, k)
+            chunk_dict[coord.name] = v
+        return chunk_dict
+
+
+    def to_netcdf(self, *args, datastore, **kwargs):
+        ''' write data according to name scheme
+            writes are append only, cannot modify existing variables
+            if file does not exist, it is created by datastore
+        '''
+        f = datastore.out_handle(self._obj)
+        out_file_ds = xr.open_dataset(f) # read only meta arrays
+        scheme = out_file_ds.camps.name_scheme
+        arrays = self._obj.camps.split_based_on_scheme(scheme)
+        ds = xr.Dataset()
+        for array in arrays:
+            array.name = name_from_var_and_scheme(array, scheme)
+            if array.name in out_file_ds:
+                raise ValueError(f'no support for modifying variables that are already on output file {f}')
+            else:
+                # this is a new variable, ensure no coords conflict
+                for coord_name in array.coords:
+                    if coord_name in out_file_ds:
+                        print(f'coord {coord_name} is already on output file')
+                        if not array[coord_name].equals(out_file_ds[coord_name]):
+                            new_coord_name = coord_name + str(tokenize(array[coord_name]))
+                            array = array.rename({coord_name:new_coord_name})
+
+                    if coord_name in ds:
+                        print(f'coord {coord_name} is already on buffer ds')
+                        if not array[coord_name].equals(ds[coord_name]):
+                            new_coord_name = coord_name + str(tokenize(array[coord_name]))
+                            array = array.rename({coord_name:new_coord_name})
+
+            ds = ds.assign({array.name: array})
+
+        out_file_ds.close()
+        return ds.to_netcdf(f, mode='a', **kwargs)
+
+
+
+#                while True:
+#
+#            print(name_from_var_and_scheme(array, scheme))
+#        arrays = scheme.to_store_dataset(self._obj)
+#        if os.path.exists(f):
+#            ds = xr.open_dataset(f)
+#            scheme_on_file = VarNameScheme.from_dataset(ds)
+#            ds.close()
+#            print(scheme_on_file)
+#            print(scheme)
+#            if scheme_on_file != scheme:
+#                raise ValueError('Name scheme on file does not match name scheme from datastore')
+#            # try adding to inmem dataset, will fail if issues
+#            ds['name'] = self._obj
+#            self._obj.to_netcdf(f, mode='a', **kwargs)
+#        else:
+#            scheme.to_netcdf(f)
+
+    def split_based_on_scheme(self, scheme) -> list:
+        ''' split self array based on var naming scheme '''
+        arrays = [self._obj]
+        temp_arrays = list()
+        for meta_piece_name in scheme.pieces:
+            meta_piece = meta_pieces[meta_piece_name]
+            for arr in arrays:
+                coord_name = meta_piece.coord_name(arr)
+                #non_coord_attr = meta_piece.non_coord_attr(arr)
+                if coord_name:
+                    for v in arr[coord_name].data:
+                        #a = arr.loc[{coord_name: pd.Index(v)}]
+                        a = meta_piece.select_one(arr, coord_name, v)
+                        #a = arr.loc[{coord_name: v}]
+                        temp_arrays.append(a)
+                else:
+                    temp_arrays.append(arr)
+            arrays = temp_arrays
+            temp_arrays = list()
+        return arrays
+
 
 filters = list()
 
@@ -106,19 +242,20 @@ def filter(f):
 
 @filter
 def forecast_reference_time(data: xr.DataArray, var: camps.Variable) -> xr.DataArray:
-    if var.forecast_reference_time is None:
+    if var.reference_time is None:
         return data
     else:
         #reference_time, _ = data.camps.dim_ax_from_standard_name('forecast_reference_time')
         reference_time = 'reference_time'
-        return data.loc[{reference_time: var.forecast_reference_time}]
+        return data.loc[{reference_time: var.reference_time}]
 
 @filter
 def time(data: xr.DataArray, var: camps.Variable) -> xr.DataArray:
-    if var.time is None:
+    dim_name = meta_pieces['time'].coord_name(data)
+    if dim_name is None or dim_name not in data.dims:
         return data
     else:
-        return data.sel(time=var.time)
+        return data.loc[{dim_name:var.time}]
 
 @filter
 def lead_time(data: xr.DataArray, var: camps.Variable) -> xr.DataArray:

@@ -72,7 +72,7 @@ def smooth2d_block(da: xr.DataArray, dims, **kwargs) -> xr.DataArray:
 
 @actor
 def smooth2d(da: Union[camps.Variable, xr.DataArray],
-             dims=('projection_x_coordinate', 'projection_y_coordinate'),
+             dims=('x', 'y'),
              datastore: DataStore = None, chunks: dict = None,
              **kwargs) -> xr.DataArray:
     '''
@@ -90,13 +90,13 @@ def smooth2d(da: Union[camps.Variable, xr.DataArray],
         if chunks:
             da = da.camps.chunk(chunks)
 
-    dim0, _ = da.camps.dim_ax_from_standard_name(dims[0])
-    dim1, _ = da.camps.dim_ax_from_standard_name(dims[1])
+    dim0, _ = da.camps.dim_ax(dims[0])
+    dim1, _ = da.camps.dim_ax(dims[1])
     dims = (dim0, dim1)
     kwargs['dims'] = dims  # kwargs are passed to smooth2d_block
 
     for dim in dims:
-        n_chunks = da.camps.chunks_spanning_dim(dim)
+        n_chunks = da.camps.nchunks_spanning_dim(dim)
         if n_chunks > 1:
             raise ValueError(f'Expected chunks spanning dim "{dim}" to be one, but was {n_chunks};'
                              f' chunked data may not span dim "{dim}" with multiple chunks')
@@ -150,24 +150,24 @@ def wind_speed_from_uv(da=None, *, u: Union[camps.Variable, xr.DataArray],
     speed = xr.apply_ufunc(lambda u, v: np.sqrt(u**2 + v**2), u, v, dask='allowed')
     # Create metadata accordingly
     speed.name = 'wind_speed'
-    speed.attrs['standard_name'] = 'wind_speed'
+    speed.attrs['observed_property'] = 'wind_speed'
     return speed
 
 
-@actor
-def to_netcdf(da: Union[camps.Variable, xr.DataArray], *, datastore: DataStore = None,
-              chunks: dict = None, **kwargs):
-
-    if isinstance(da, camps.Variable):
-        da = da(datastore=datastore, chunks=chunks, **kwargs)
-    elif isinstance(da, xr.DataArray):
-        if chunks:
-            da = da.camps.chunk(chunks)
-
-    out_handle = datastore.out_handle(da)
-
-    da = da.to_netcdf(out_handle, compute=False, **kwargs)
-    return da
+#@actor
+#def to_netcdf(da: Union[camps.Variable, xr.DataArray], *, datastore: DataStore = None,
+#              chunks: dict = None, **kwargs):
+#
+#    if isinstance(da, camps.Variable):
+#        da = da(datastore=datastore, chunks=chunks, **kwargs)
+#    elif isinstance(da, xr.DataArray):
+#        if chunks:
+#            da = da.camps.chunk(chunks)
+#
+#    out_handle = datastore.out_handle(da)
+#
+#    da = da.to_netcdf(out_handle, compute=False, **kwargs)
+#    return da
 
 
 @actor
@@ -181,15 +181,15 @@ def to_stations(da: Union[camps.Variable, xr.DataArray], *, stations: pd.DataFra
             da = da.camps.chunk(chunks)
 
     try:
-        xdim, _ = da.camps.dim_ax_from_standard_name('projection_x_coordinate')
-        ydim, _ = da.camps.dim_ax_from_standard_name('projection_y_coordinate')
+        xdim = da.camps.x.name
+        ydim = da.camps.y.name
     except ValueError:
-        xdim, _ = da.camps.dim_ax_from_standard_name('longitude')
-        ydim, _ = da.camps.dim_ax_from_standard_name('latitude')
+        xdim = da.camps.longitude.name
+        ydim = da.camps.latitude.name
 
-    # need to know the lat and lon coord names
-    lon = da.camps.coord_name_from_standard_name('longitude')
-    lat = da.camps.coord_name_from_standard_name('latitude')
+    # need to know the lat and lon coord names, they would only be the same as xdim,ydim for mercator grid
+    lon = da.camps.longitude.name
+    lat = da.camps.latitude.name
 
     ###################
     # Prep the template
@@ -246,7 +246,6 @@ def to_stations(da: Union[camps.Variable, xr.DataArray], *, stations: pd.DataFra
         da = config_meta(da, xdim, ydim, stations)
         return da
 
-    kwargs = dict()
     kwargs['xdim'] = xdim
     kwargs['ydim'] = ydim
     kwargs['stations'] = stations

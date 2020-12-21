@@ -1,0 +1,56 @@
+reference_time:  # Name in camps software
+  coord_attr:
+    standard_name: forecast_reference_time
+    #  non_coord_attr:
+
+reference_time_of_day:  # Name in camps software
+  derived_from: reference_time
+
+lead_time:
+  coord_attr:
+    standard_name: forecast_period
+
+valid_time:
+  coord_attr:
+    standard_name: time
+  derived_from: [reference_time, lead_time]
+
+time:
+  coord_attr:
+    standard_name: time
+  non_coord_attr: time
+
+observed_property:
+  coord_attr: # on read, ony coord attr is switch for identifying meta, all used on write
+    camps_name: observed_property
+  depreciated_coord_attr: # only relevant to read
+    old_camps_name: observed_property
+  non_coord_attr: observed_property  # let pressence of non_coord_attr indicate should be ommited as dim/coord when not multiple
+  depreciated_non_coord_attrs: [old_coord_names]  # depreciated non_coord_attrs need to be separated to allow omission of non_coord_attr, could be relevant to reading
+
+smooth_type:
+  coord_attr:
+    camps_name: smooth_type
+  non_coord_attr: smooth_type
+
+latitude:
+  coord_attr:
+    standard_name: latitude
+  non_coord_attr: latitude
+
+longitude:
+  coord_attr:
+    standard_name: longitude
+  non_coord_attr: longitude
+
+x:
+  coord_attr:
+    standard_name: projection_x_coordinate
+    axis: X
+y:
+  coord_attr:
+    standard_name: projection_y_coordinate
+    axis: Y
+z:
+  coord_attr:
+    axis: Z
