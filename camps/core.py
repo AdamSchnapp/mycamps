@@ -61,6 +61,9 @@ class Coord:
         coord_name = meta_pieces[self.name].coord_name(obj._obj)
         if coord_name:
             return obj._obj[coord_name]
+        else:
+            raise KeyError(f'no metadata coord for "{name}"')
+
 
 @xr.register_dataarray_accessor("camps")
 class CampsDataarray:
@@ -68,11 +71,13 @@ class CampsDataarray:
     #time = Time()
     reference_time = Coord()
     lead_time = Coord()
+    time = Coord()
     latitude = Coord()
     longitude = Coord()
     x = Coord()
     y = Coord()
     z = Coord()
+
 
     def __init__(self, xarray_obj):
         self._obj = xarray_obj
@@ -158,7 +163,7 @@ class CampsDataarray:
         return chunk_dict
 
 
-    def to_netcdf(self, *args, datastore, **kwargs):
+    def to_netcdf(self, datastore, **kwargs):
         ''' write data according to name scheme
             writes are append only, cannot modify existing variables
             if file does not exist, it is created by datastore
@@ -176,13 +181,11 @@ class CampsDataarray:
                 # this is a new variable, ensure no coords conflict
                 for coord_name in array.coords:
                     if coord_name in out_file_ds:
-                        print(f'coord {coord_name} is already on output file')
                         if not array[coord_name].equals(out_file_ds[coord_name]):
                             new_coord_name = coord_name + str(tokenize(array[coord_name]))
                             array = array.rename({coord_name:new_coord_name})
 
                     if coord_name in ds:
-                        print(f'coord {coord_name} is already on buffer ds')
                         if not array[coord_name].equals(ds[coord_name]):
                             new_coord_name = coord_name + str(tokenize(array[coord_name]))
                             array = array.rename({coord_name:new_coord_name})
@@ -190,7 +193,8 @@ class CampsDataarray:
             ds = ds.assign({array.name: array})
 
         out_file_ds.close()
-        return ds.to_netcdf(f, mode='a', **kwargs)
+        save = ds.to_netcdf(f, mode='a', **kwargs)
+        return save
 
 
 
@@ -219,16 +223,8 @@ class CampsDataarray:
         for meta_piece_name in scheme.pieces:
             meta_piece = meta_pieces[meta_piece_name]
             for arr in arrays:
-                coord_name = meta_piece.coord_name(arr)
-                #non_coord_attr = meta_piece.non_coord_attr(arr)
-                if coord_name:
-                    for v in arr[coord_name].data:
-                        #a = arr.loc[{coord_name: pd.Index(v)}]
-                        a = meta_piece.select_one(arr, coord_name, v)
-                        #a = arr.loc[{coord_name: v}]
-                        temp_arrays.append(a)
-                else:
-                    temp_arrays.append(arr)
+                arr = meta_piece.split_array(arr)
+                temp_arrays.extend(arr)
             arrays = temp_arrays
             temp_arrays = list()
         return arrays

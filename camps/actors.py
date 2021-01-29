@@ -10,10 +10,16 @@ from copy import copy
 import camps
 from scipy.spatial import cKDTree
 from camps.datastore import DataStore
-from typing import Union
+from typing import Union, List
+from numbers import Number
+from wrf import interplevel
 
 
 actors = dict()
+
+Var = Union[camps.Variable, xr.DataArray]
+
+
 
 
 def actor(method=None, **kwargs):
@@ -71,7 +77,7 @@ def smooth2d_block(da: xr.DataArray, dims, **kwargs) -> xr.DataArray:
 
 
 @actor
-def smooth2d(da: Union[camps.Variable, xr.DataArray],
+def smooth2d(da: Var,
              dims=('x', 'y'),
              datastore: DataStore = None, chunks: dict = None,
              **kwargs) -> xr.DataArray:
@@ -109,8 +115,8 @@ def smooth2d(da: Union[camps.Variable, xr.DataArray],
 
 
 @actor
-def wind_speed_from_uv(da=None, *, u: Union[camps.Variable, xr.DataArray],
-                       v: Union[camps.Variable, xr.DataArray],
+def wind_speed_from_uv(da=None, *, u: Var,
+                       v: Var,
                        datastore: DataStore = None, chunks: dict = None, **kwargs) -> xr.DataArray:
     ''' return wind speed data array created from U and V wind speed components'''
 
@@ -171,7 +177,7 @@ def wind_speed_from_uv(da=None, *, u: Union[camps.Variable, xr.DataArray],
 
 
 @actor
-def to_stations(da: Union[camps.Variable, xr.DataArray], *, stations: pd.DataFrame,
+def to_stations(da: Var, *, stations: pd.DataFrame,
                 datastore: DataStore = None, chunks: dict = None, **kwargs) -> xr.DataArray:
 
     if isinstance(da, camps.Variable):
@@ -190,6 +196,14 @@ def to_stations(da: Union[camps.Variable, xr.DataArray], *, stations: pd.DataFra
     # need to know the lat and lon coord names, they would only be the same as xdim,ydim for mercator grid
     lon = da.camps.longitude.name
     lat = da.camps.latitude.name
+
+    # ensure longitude degrees are consistently represented numerically
+    da[lon].data[da[lon].data > 180] = da[lon].data[da[lon].data > 180] - 360
+
+    from numpy import fabs
+    if fabs(da[lon]).max() > 170: # if grid points within 10 degrees of 180; use 0 to 360 degree range
+        da[lon].data[da[lon].data < 0] = da[lon].data[da[lon].data < 0] + 360
+        stations.lon[stations.lon < 0] = stations.lon[stations.lon < 0] + 360
 
     ###################
     # Prep the template
@@ -214,6 +228,7 @@ def to_stations(da: Union[camps.Variable, xr.DataArray], *, stations: pd.DataFra
         stations.index.set_names('station', inplace=True)
         # assign the new coords
         da = da.assign_coords({'platform_id': stations.platform_id})
+        da.platform_id.attrs['standard_name'] = 'platform_id'
 
         # prep lat/lon coords with 'station' call index  ## previously I was indexing by platform_id, but platform id is not strictly a cf "coordinate variable" based on NUG because it is not numeric
         #stations = stations.set_index('platform_id')
@@ -222,8 +237,13 @@ def to_stations(da: Union[camps.Variable, xr.DataArray], *, stations: pd.DataFra
         # assign the new coords with arbitrary integer index
         da = da.assign_coords({'lat': stations.lat})
         da.lat.attrs['standard_name'] = 'latitude'
+        da.lat.attrs['units'] = 'degrees_noth'
         da = da.assign_coords({'lon': stations.lon})
         da.lon.attrs['standard_name'] = 'longitude'
+        da.lon.attrs['units'] = 'degrees_east'
+
+        # stick with -180 to 180 dgrees east for longitude
+        da.lon.data[da.lon.data > 180] = da.lon.data[da.lon.data > 180] - 360
 
         # drop the arbitrary station dim/index coordinate (for cf NUG conventions... station is an arbitrary coordinate described by auxiliarry coordinate vraiable platform_id)
         da = da.reset_index('station', drop=True)
@@ -252,3 +272,132 @@ def to_stations(da: Union[camps.Variable, xr.DataArray], *, stations: pd.DataFra
     data = xr.map_blocks(nearest_worker, da, kwargs=kwargs, template=da_template)
 
     return data
+
+
+@actor
+def interp_to_isosurfaces(da: Var, *,
+                level_data: Var,
+                isovalues: Union[Number, List[Number]],
+                datastore: DataStore = None, chunks: dict = None, **kwargs) -> xr.DataArray:
+
+    if isinstance(da, camps.Variable):
+        da = da(datastore=datastore, chunks=chunks, **kwargs)
+    elif isinstance(da, xr.DataArray):
+        if chunks:
+            da = da.camps.chunk(chunks)
+
+    if isinstance(level_data, camps.Variable):
+        level_data = level_data(datastore=datastore, chunks=chunks, **kwargs)
+    elif isinstance(level_data, xr.DataArray):
+        if chunks:
+            level_data = level_data.camps.chunk(chunks)
+
+
+    z = da.camps.z.name
+    print(da)
+    n_chunks = da.camps.nchunks_spanning_dim('z')
+    if n_chunks > 1:
+        raise ValueError(f'Expected chunks spanning dim "{z}" to be one, but was {n_chunks};'
+                         f' chunked data may not span dim "{z}" with multiple chunks')
+
+    if da.coords.keys() != level_data.coords.keys():
+        raise ValueError('data and level variable coords do not match')
+
+    # detach and re-attach non-NUG coords
+    z = da.camps.z.name
+    saved_coords = dict()
+    for coord in da.coords:
+        if len(da[coord].dims) > 1:
+            if z in da[coord].dims:
+                raise ValueError('non-NUG coords spanning z axis are not allowed')
+            saved_coords[coord] = da[coord]
+            da = da.drop(coord)
+            level_data = level_data.drop(coord)
+
+
+    # prep for computation via map_blocks
+    kwargs['isovalues'] = isovalues
+
+    # inputs prepped as dataset as map_blocks does not take multiple chunked arrays
+    ds = xr.Dataset()
+    ds['variable'] = da
+    ds['level_variable'] = level_data
+
+    # prep output template (the output will have this meta structure)
+    template = interp_to_isosurface_meta_template(ds, isovalues)
+
+    # horizontal dims will be either x,y grid or stations, for now don't worry about handling stations
+    # rename input z axis dim name to output z axis dim name (determined by meta template; only z is touched)
+    x = da.camps.x.name
+    y = da.camps.y.name
+    z_in = da.camps.z.name
+    z_final = template.camps.z.name
+    ds = ds.rename({z_in: z_final})
+    kwargs['space_dims'] = [ z_final, x, y]
+
+    # perform work on each chunked block individually with the interp_to_isosurface_worker
+    #da = xr.map_blocks(interp_to_isosurface_worker, ds, kwargs=kwargs, template=template)
+    da = xr.map_blocks(interp_to_isosurface_worker, ds, kwargs=kwargs, template=template)
+
+    # re-assign coords that spanned more than one dimension
+    da = da.assign_coords(saved_coords)
+
+    return da
+
+def interp_to_isosurface_meta_template(ds, isovalues):
+    ''' ds is a dataset with variables named variable and level_variable '''
+
+    if not isinstance(isovalues, list):
+        isovalues = [isovalues]
+
+    z = ds.variable.camps.z.name
+    da = ds.variable.drop(z) # drop the coordinate z (metadata array) # this metadata array will be replaced with isovalues
+    da = da.isel({z:range(len(isovalues))})
+    da = da.assign_coords({z: isovalues})
+    da[z].attrs = ds.level_variable.attrs  # need to get only relevant attrs from level_data; for now just get all
+    da[z].attrs['axis'] = 'Z'
+    da = da.rename({z: 'z'})
+    return da
+
+
+
+def interp_to_isosurface_worker(ds: xr.Dataset, *, isovalues, space_dims, **kwargs) -> xr.DataArray:
+    '''
+    Return an xr.DataArray with a block of data interpolated to an isosurface.
+    Input must be xr.Dataset object that is not lazy and not chunked.
+    Input dataset will have two variables with names "variable" and "level_variable"
+    the two arrays needed are passed as a dataset as xr.map_blocks cannot take a datarray as kwarg
+    Lazy/Dasky xr.DataArray objects do not support data assignment with .loc
+    like xr.DataArrays with numpy data.
+    '''
+
+    # make final data structure to populate with data
+    final = interp_to_isosurface_meta_template(ds, isovalues)
+
+    # record initial axis order; for reshaping back to initial before return
+    final_dims = final.variable.dims
+    ordered_dims = list(final_dims)
+    z = final.camps.z.name
+    ordered_dims.remove(z)
+    ordered_dims.insert(0, z) # ordered dims now has z as left-most axis for use with wrf interplevel
+
+    # go to working space shape
+    ds = ds.transpose(*ordered_dims) # input
+    final = final.transpose(*ordered_dims) # output
+
+
+    # order dims for work with interplevel
+    other_dims = [dim for dim in ds.dims if dim not in space_dims]
+    other_dim_arrays = [ds[dim].data for dim in other_dims]
+    # iterate over all the space sections applying interplevel
+    for dim_values in product(*other_dim_arrays):
+        loc = {k: v for k, v in zip(other_dims, dim_values)}
+        print(loc)
+        final.loc[loc] = interplevel(ds.variable.loc[loc], ds.level_variable.loc[loc], isovalues, meta=False, **kwargs)
+
+
+    # go back to initial shape and axis order
+    final = final.transpose(*final_dims)
+    return final
+
+

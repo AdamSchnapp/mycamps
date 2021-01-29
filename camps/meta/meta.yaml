@@ -4,7 +4,7 @@ reference_time:  # Name in camps software
     #  non_coord_attr:
 
 reference_time_of_day:  # Name in camps software
-  derived_from: reference_time
+  non_coord_attr: reference_cycle
 
 lead_time:
   coord_attr:

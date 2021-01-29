@@ -148,10 +148,10 @@ class Variable(dict):
 
     camps_multistep: camps.MultiStep = None  # this is the instruction set
 
-    @property
-    def reference_time_of_day(self) -> np.ndarray:  # cycle
-        if self.reference_time:
-            return np.unique(dates.time)
+#    @property
+#    def reference_time_of_day(self) -> np.ndarray:  # cycle
+#        if self.reference_time:
+#            return np.unique(dates.time)
 
 #    @property
 #    def time_of_day(self) -> np.ndarray:

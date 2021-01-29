@@ -127,10 +127,7 @@ class MetaPiece(ABC, ClassRegistry):
             a.attrs[non_coord_attr] = str(value)
         else:
             # ommision of 'non_coord_attr' is switch to retain this metapiece as a unit dimension
-            if self.meta_type == 'datetime':
-                a = array.loc[{coord_name: pd.DatetimeIndex([value])}]
-            else:
-                a = array.loc[{coord_name: pd.Index([value])}]
+            a = array.loc[{coord_name: pd.Index([value])}]
         return a
 
     @classmethod
@@ -141,9 +138,18 @@ class MetaPiece(ABC, ClassRegistry):
         else:
             return data.loc[{dim_name: getattr(var,self.meta_name)}]
 
-#    @abstractmethod
-#    def array_has_more_than_one(self):
-#        pass
+    @classmethod
+    def split_array(self, array) -> list:
+        ''' split array based on meta piece '''
+        coord_name = self.coord_name(array)
+        return_arrays = list()
+        if coord_name:
+            for v in array[coord_name].data:
+                a = self.select_one(array, coord_name, v)
+                return_arrays.append(a)
+        else:
+            return_arrays.append(array)
+        return return_arrays
 
 
 meta_pieces = MetaPiece._class_registry
@@ -219,14 +225,75 @@ class ReferenceTime(MetaPiece, default_name='reference_time'):
 
 
 class ReferenceTimeOfDay(MetaPiece, default_name='reference_time_of_day'):
-    max_len = 6
+    max_len = 8
     meta_name = 'reference_time_of_day'
 
     @classmethod
-    def encode(self, time: datetime.time):
-        # store encoded as seconds after 00 time
-        td = timedelta(hours=time.hour, seconds=time.second)
-        return self.prefix + str(td.seconds)
+    def encode(self, timedelta: datetime.timedelta) -> str:
+        timedelta = pd.Timedelta(timedelta)
+        return str(timedelta.seconds) + 's'
+
+    # reference time of day is cycle time; it is not explicitly a dimension of an array,
+    # It may be a coordinate variable that decribes the times that exist in reference_time; and is thus derived metadata
+    # It may be used to filter reference_time
+    @classmethod
+    def select(self, data: xr.DataArray, var: camps.Variable) -> xr.DataArray:
+        reference_time_name = meta_pieces['reference_time'].coord_name(data)
+        if reference_time_name is None:
+            raise ValueError('No reference_time metadata, therefore cannot filter by {self.meta_name}')
+        reference_time = pd.DatetimeIndex(data.camps.reference_time.to_series())
+        ref_day = reference_time.floor('d')
+        ref_time_as_td = reference_time - ref_day
+        refs_select = reference_time[ref_time_as_td.isin(var.reference_time_of_day)]
+        return data.loc[{reference_time_name: refs_select}]
+
+    @classmethod
+    def select_one(self, array, coord_name, value) -> xr.DataArray:
+        ''' selecting one reference time of day does not eleminate an actual dim;
+            just add the non_coord_attr if it is provided
+        '''
+        a = array.loc[{coord_name: value}]
+        if 'non_coord_attr' in meta_config[self.meta_name]:
+            non_coord_attr = meta_config[self.meta_name]['non_coord_attr']
+            print(non_coord_attr)
+            a.attrs[non_coord_attr] = str(value)
+        return a
+
+    @classmethod
+    def val_from_array_attr(self, array: xr.DataArray):
+        ''' for forecast_reference_time_of_day return timedelta derived from reference_time if only one reference_time exists
+            do not actually reference variable attributes as they do not support
+            return the value from this piece of metadata if it is expressed via an attr;
+            if it is not expressed as a value via an attribute, return None;
+            this does not exclude this piece of metadata being expressed as a coord.
+        '''
+        ref_times_of_day = array.camps.reference_time - array.camps.reference_time.dt.floor('d')
+        n_unique_time = len(np.unique(ref_times_of_day))
+        if n_unique_time > 1:
+            raise ValueError('More than one reference_time_of_day in array')
+        elif n_unique_time == 1:
+            return ref_times_of_day.data[0]
+        return None
+
+    @classmethod
+    def split_array(self, array) -> list:
+        ''' split array based on meta piece '''
+        reference_time_name = meta_pieces['reference_time'].coord_name(array)
+        if reference_time_name is None:
+            return [array]
+        reference_time = pd.DatetimeIndex(array.camps.reference_time.to_series())
+        ref_day = reference_time.floor('d')
+        ref_times_as_td = reference_time - ref_day
+        unique_times = ref_times_as_td.unique()
+        return_arrays = list()
+        for td in unique_times:
+            print(td)
+            #sel = reference_time[ref_times_as_td == td]
+            time = (datetime.datetime.min + td).time()  # this converts a timedelta to a datetime.time
+            a = self.select_one(array, reference_time_name, time)
+            return_arrays.append(a)
+        return return_arrays
+
 
 class Time(MetaPiece, default_name='time'):
     max_len = 12
