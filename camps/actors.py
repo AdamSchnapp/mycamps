@@ -160,20 +160,23 @@ def wind_speed_from_uv(da=None, *, u: Var,
     return speed
 
 
-#@actor
-#def to_netcdf(da: Union[camps.Variable, xr.DataArray], *, datastore: DataStore = None,
-#              chunks: dict = None, **kwargs):
-#
-#    if isinstance(da, camps.Variable):
-#        da = da(datastore=datastore, chunks=chunks, **kwargs)
-#    elif isinstance(da, xr.DataArray):
-#        if chunks:
-#            da = da.camps.chunk(chunks)
-#
-#    out_handle = datastore.out_handle(da)
-#
-#    da = da.to_netcdf(out_handle, compute=False, **kwargs)
-#    return da
+def edge(a):
+    '''
+    Return 1-dimensional array consisting of the perimiter points cyclicly
+    >>> a = np.array([[1, 2, 3],
+    ...               [4, 5, 6],
+    ...               [7, 8, 9]])
+    >>> edge(a)
+        array([1, 4, 7, 8, 9, 6, 3, 2])
+    '''
+
+    if a.ndim != 2:
+        raise ValueError("requires two dimensional array")
+    s1 = a[:a.shape[0]-1,0]
+    s2 = a[-1,:a.shape[1]-1]
+    s3 = a[::-1,-1][:-1]
+    s4 = a[0,::-1][:-1]
+    return np.concatenate((s1,s2,s3,s4))
 
 
 @actor
@@ -186,42 +189,78 @@ def to_stations(da: Var, *, stations: pd.DataFrame,
         if chunks:
             da = da.camps.chunk(chunks)
 
-    try:
-        xdim = da.camps.x.name
-        ydim = da.camps.y.name
-    except ValueError:
-        xdim = da.camps.longitude.name
-        ydim = da.camps.latitude.name
+    x = da.camps.x.name
+    y = da.camps.y.name
 
-    # need to know the lat and lon coord names, they would only be the same as xdim,ydim for mercator grid
+    # rechunk so that multiple chunks don't span x and y dims
+    da = da.chunk({x:-1, y:-1})
+
+    # lat and lon coord names could be the same as x, y for mercator grid
     lon = da.camps.longitude.name
     lat = da.camps.latitude.name
 
-    # ensure longitude degrees are consistently represented numerically
-    da[lon].data[da[lon].data > 180] = da[lon].data[da[lon].data > 180] - 360
+    if lon in da.indexes or lat in da.indexes:
+        da = da.reset_index([lon, lat])
+        lon = da.camps.longitude.name
+        lat = da.camps.latitude.name
 
-    from numpy import fabs
-    if fabs(da[lon]).max() > 170: # if grid points within 10 degrees of 180; use 0 to 360 degree range
-        da[lon].data[da[lon].data < 0] = da[lon].data[da[lon].data < 0] + 360
-        stations.lon[stations.lon < 0] = stations.lon[stations.lon < 0] + 360
+    # ensure longitude degrees are consistently represented numerically; could use projection coords in future.
+    da[lon].load()
+    lon_attrs = da[lon].attrs
+    da[lon] = xr.where(da[lon] > 180, da[lon] - 360, da[lon])
+    da[lon].attrs = lon_attrs
+    # stations are already -179 to 180
+
+    # make a grid polygon on the lat/lon crs
+    from shapely.geometry import Polygon, MultiPoint, Point
+    if da[lon].ndim == 1:
+        unit_lats = xr.DataArray(np.ones(da[lat].shape), dims=da[lat].dims)
+        unit_lons = xr.DataArray(np.ones(da[lon].shape), dims=da[lon].dims)
+        edge_lon = edge(da[lon] * unit_lats)  # broadcast constant lon along the lat dim
+        edge_lat = edge(unit_lons * da[lat])  # broadcast constant lat along the lon dim
+    else:
+        edge_lon = edge(da[lon])
+        edge_lat = edge(da[lat])
+
+    import cartopy.crs as ccrs
+    #xyz = ccrs.PlateCarree().transform_points(ccrs.PlateCarree(), edge_lon, edge_lat)
+    #xy = zip(xyz[:,0], xyz[:,1])
+    xy = zip(edge_lon, edge_lat)
+    grid_polygon = Polygon(xy)
+
+    # make station multipoint shapely object on the same lat/lon crs
+    #xyz = ccrs.PlateCarree().transform_points(ccrs.PlateCarree(), stations.lon.values, stations.lat.values)
+    #xy = zip(xyz[:,0], xyz[:,1])
+    xy = zip(stations.lon.values, stations.lat.values)
+    station_points = MultiPoint(list(xy))
+
+    # determine which platform_ids lie outside grid domain
+    stations['point_str'] = pd.Series([str(p) for p in station_points])
+    stations['ix'] = stations.index
+    points_outside_grid = station_points - station_points.intersection(grid_polygon)
+    if not points_outside_grid.is_empty:
+        if isinstance(points_outside_grid, Point):
+            points_outside_grid = [points_outside_grid]
+        ix_stations_outside_grid = stations.set_index('point_str').loc[[str(p) for p in points_outside_grid]].ix
+    else:
+        ix_stations_outside_grid = list() # let be empty list
 
     ###################
     # Prep the template
     ###################
-
-    da_template = da.copy()
+    template = da.copy()
 
     # reshape action
-    da_template = da_template.stack(station=(xdim, ydim))
-    da_template = da_template.isel(station=np.arange(len(stations)))  # select appropriate stations
-    # end reshape action
+    template = template.stack(station=(x, y))  # combine the lat/lon dims into one dim called station
+    template = template.isel(station=[0]*len(stations))  # select only the first; this removes the dim station
+    template = template.drop('station')  # drop coord data associated with 'station' from the 0th grid point
 
-    def config_meta(da, xdim, ydim, stations):
-        da = da.reset_index('station') # remove the temorary multiindex
 
-        da = da.reset_coords([xdim, ydim], drop=True) # remove x and y dimensions (may be lat/lon)
-        if lat in da.coords:
-            da = da.reset_coords([lat, lon], drop=True) # remove the lats and lons of the grid cells
+    def config_meta(da, stations, x, y, lon, lat):
+        # remove metadata related to the grid grid
+        print(x,y)
+        da = da.drop_vars([x, y], errors='ignore')
+        da = da.drop_vars([lon, lat], errors='ignore')
 
         # prep station coord with 'station' numeric index
         stations = stations.reset_index()
@@ -242,34 +281,36 @@ def to_stations(da: Var, *, stations: pd.DataFrame,
         da.lon.attrs['standard_name'] = 'longitude'
         da.lon.attrs['units'] = 'degrees_east'
 
-        # stick with -180 to 180 dgrees east for longitude
-        da.lon.data[da.lon.data > 180] = da.lon.data[da.lon.data > 180] - 360
-
-        # drop the arbitrary station dim/index coordinate (for cf NUG conventions... station is an arbitrary coordinate described by auxiliarry coordinate vraiable platform_id)
+        # drop the numeric station index coordinate (for cf NUG conventions... station is described by auxiliarry coordinate variable with standard name platform_id)
         da = da.reset_index('station', drop=True)
 
         return da
 
-    da_template = config_meta(da_template, xdim, ydim, stations)
+    template = config_meta(template, stations, x, y, lon, lat)
     # end preping the template
 
-    def nearest_worker(da: xr.DataArray,* ,xdim ,ydim, stations) -> xr.DataArray:
-        da = da.stack(station=(xdim, ydim))  # squash the horizontal space dims into one
+    def nearest_worker(da: xr.DataArray, *, stations, x, y, lon, lat) -> xr.DataArray:
+        da = da.stack(station=(x, y))  # squash the horizontal space dims into one
         gridlonlat = np.column_stack((da[lon].data, da[lat].data))  # array of lon/lat pairs of gridpoints # not a lazy version of column_stack
         stationlonlat = np.column_stack((stations.lon, stations.lat))  # array of lon/lat pairs of stations
 
-        tree = cKDTree(gridlonlat)  # kdtree is fast search of nearest neighbor (lat/lon value-wise)
-        dist_ix = tree.query(stationlonlat)  # find the distance (degrees) and index of the nearest gridpoint to each station
+        tree = cKDTree(gridlonlat)  # kdtree is fast search of nearest neighbor (lat/lon crs)
+        dist_ix = tree.query(stationlonlat)  # find the distance (degrees since lat/lon crs) and index of the nearest gridpoint to each station
 
         da = da.isel(station=dist_ix[1])
-        # still need to determine which stations should be missing as aren't covered by grid
-        da = config_meta(da, xdim, ydim, stations)
+        da = da.drop_vars('station')  # remove station coord
+        da.loc[{'station': ix_stations_outside_grid}] = np.nan  # use integer index location to set stations outside grid to missing
+
+        da = config_meta(da, stations, x, y, lon, lat)  # add the station metadata to the already created array
         return da
 
-    kwargs['xdim'] = xdim
-    kwargs['ydim'] = ydim
     kwargs['stations'] = stations
-    data = xr.map_blocks(nearest_worker, da, kwargs=kwargs, template=da_template)
+    kwargs['x'] = x
+    kwargs['y'] = y
+    kwargs['lon'] = lon
+    kwargs['lat'] = lat
+    data = xr.map_blocks(nearest_worker, da, kwargs=kwargs, template=template)
+
 
     return data
 
@@ -293,12 +334,8 @@ def interp_to_isosurfaces(da: Var, *,
             level_data = level_data.camps.chunk(chunks)
 
 
-    z = da.camps.z.name
-    print(da)
-    n_chunks = da.camps.nchunks_spanning_dim('z')
-    if n_chunks > 1:
-        raise ValueError(f'Expected chunks spanning dim "{z}" to be one, but was {n_chunks};'
-                         f' chunked data may not span dim "{z}" with multiple chunks')
+    # rechunk so that multiple chunks don't span z dim
+    da = da.camps.chunk({'z':-1})
 
     if da.coords.keys() != level_data.coords.keys():
         raise ValueError('data and level variable coords do not match')
@@ -386,13 +423,13 @@ def interp_to_isosurface_worker(ds: xr.Dataset, *, isovalues, space_dims, **kwar
     final = final.transpose(*ordered_dims) # output
 
 
+
     # order dims for work with interplevel
     other_dims = [dim for dim in ds.dims if dim not in space_dims]
     other_dim_arrays = [ds[dim].data for dim in other_dims]
     # iterate over all the space sections applying interplevel
     for dim_values in product(*other_dim_arrays):
         loc = {k: v for k, v in zip(other_dims, dim_values)}
-        print(loc)
         final.loc[loc] = interplevel(ds.variable.loc[loc], ds.level_variable.loc[loc], isovalues, meta=False, **kwargs)
 
 
