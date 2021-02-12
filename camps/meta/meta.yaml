@@ -33,6 +33,11 @@ smooth_type:
     camps_name: smooth_type
   non_coord_attr: smooth_type
 
+model_identification:
+  coord_attr:
+    camps_name: model_identification
+  non_coord_attr: model_identification
+
 latitude:
   coord_attr:
     standard_name: latitude

@@ -13,7 +13,7 @@ class DataStoreError(Exception):
     pass
 
 
-class AbstractDataStore(ABC):
+class DataStore(ABC):
     '''
         Imlplement access to i/o handles
         Let a datastore be an  optional tool for managing i/o
@@ -42,7 +42,7 @@ class AbstractDataStore(ABC):
         '''out handle is responsible for providing the single file to write to based on variable metadata'''
         pass
 
-class SimpleDataStore(AbstractDataStore):
+class SimpleDataStore(DataStore):
 
     def __init__(self, in_handle=None, out_handle=None):
         ''' initialize datastore from configuration '''
