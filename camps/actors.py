@@ -253,12 +253,11 @@ def to_stations(da: Var, *, stations: pd.DataFrame,
     # reshape action
     template = template.stack(station=(x, y))  # combine the lat/lon dims into one dim called station
     template = template.isel(station=[0]*len(stations))  # select only the first; this removes the dim station
-    template = template.drop('station')  # drop coord data associated with 'station' from the 0th grid point
+    template = template.drop('station')  # drop the multiindex lat/lon coord associated with 'station' from the 0th grid point
 
 
     def config_meta(da, stations, x, y, lon, lat):
         # remove metadata related to the grid grid
-        print(x,y)
         da = da.drop_vars([x, y], errors='ignore')
         da = da.drop_vars([lon, lat], errors='ignore')
 
