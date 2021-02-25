@@ -30,8 +30,8 @@ def to_degrees_east(lon):
         return 360.0 - (float(lon))
 
 def from_mos2ktbl(tbl):
-    df = pd.read_csv(tbl, sep=':', usecols=[0,1,2,3,6,7,18],
-            names=['platform_id','link','name','state','lat','lon','comment'], quoting=3)
+    df = pd.read_csv(tbl, sep=':', usecols=[0,1,2,3,5,6,7,18],
+            names=['platform_id', 'link', 'name', 'state', 'elev', 'lat', 'lon', 'comment'], quoting=3)
             # quoting = 3 prevents unclosed quotes from blocking parse on sep and \n
     df['platform_id'] = df['platform_id'].str.strip()
     df['lat'] = df['lat'].apply(south_to_negative)
