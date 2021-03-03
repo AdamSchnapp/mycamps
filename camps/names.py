@@ -52,8 +52,6 @@ class VarNameScheme:
 
     @classmethod
     def from_dataset(cls, ds):
-        #v = ds['camps_name_scheme']
-        #max_lengths = v.camps_name_scheme_component_max_length
         if 'camps_name_scheme' not in ds:
             raise KeyError('dataset does not have a camps name scheme')
         return cls(list(ds['camps_name_scheme'].load().data))

@@ -53,6 +53,7 @@ class MetaPiece(ABC, ClassRegistry):
 
     @classmethod
     def coord_name(self, array: xr.DataArray):
+        ''' return the name of the coord describing this type of metadata '''
         meta = meta_config[self.meta_name]
         if 'coord_attr' in meta:
             for k, v in meta['coord_attr'].items():
@@ -60,11 +61,7 @@ class MetaPiece(ABC, ClassRegistry):
                     coord_name = array.camps.coord_name_from_attr_(k, v)
                     return coord_name
                 except KeyError:  # occurrs when attr does not correspond to a coord
-                    pass
-
-
-#        if 'derived_from' in meta:
-#            raise MayBeDerivedError('No multi-length coord found based on coord_attr; derived_from does exist; maybe it can be derived.')
+                    pass  # let return be None when there isn't one
 
 
     @classmethod
@@ -90,6 +87,8 @@ class MetaPiece(ABC, ClassRegistry):
 
     @classmethod
     def decoded_value(self, var) -> str:
+        ''' given a blob of metadata as an xr.DataArray or camps.Variable determine the value of this piece of metadata
+            Raise an error if the metablob expresses more than one of this type. (this meta type is a coord of len > 1)'''
         if isinstance(var, xr.DataArray):
             decoded_value = self.val_from_array_attr(var)
             if decoded_value is None:
@@ -111,15 +110,9 @@ class MetaPiece(ABC, ClassRegistry):
             return decoded_value[0]
 
 
-
-#    def derive(self, array: xr.DataArray) -> xr.DataArray:
-#        ''' optional method to create new DataArray with derived coords.
-#            The derive method is needed when 'derived_from' is included for makeing meta
-#        '''
-#        pass
-
     @classmethod
     def select_one(self, array, coord_name, value) -> xr.DataArray:
+        ''' select a unit slice of the metadata type and arrange attrs/coords based on meta config '''
         if 'non_coord_attr' in meta_config[self.meta_name]:
             # non coord attr is a switch to ommit this metapiece as a unit dimension
             non_coord_attr = meta_config[self.meta_name]['non_coord_attr']
@@ -132,6 +125,7 @@ class MetaPiece(ABC, ClassRegistry):
 
     @classmethod
     def select(self, data: xr.DataArray, var: camps.Variable) -> xr.DataArray:
+        ''' select this metadata types values from data '''
         dim_name = self.coord_name(data)
         if dim_name is None or dim_name not in data.dims:
             return data

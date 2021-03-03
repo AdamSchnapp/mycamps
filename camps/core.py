@@ -127,42 +127,6 @@ class CampsDataarray:
         raise KeyError(f'No coordinate exists with {attr_key}: {attr_val}')
 
 
-#    def is_coord(self, metagroup: str):
-#        m = meta[metagroup]
-#        if 'cf_attr' in m:
-#            for attr in m['cf_attr']:
-#                for coord in self._obj.coords:
-#                #    print(self._obj[coord].attrs[attr.keys()[0]])
-#                    if self._obj[coord].attrs[attr.keys()[0]]:
-#                        pass
-#        #m = meta[metapiece]
-
-    def nchunks_spanning_dim(self, camps_name) -> int:
-        # return number of chunks that span the array in the dim_name direction, where dim_name is camps meta vocab
-        dim_name = getattr(self._obj.camps, camps_name).name
-        if self._obj.chunks is None:
-            return 1   # the dataset is not chunked therefore the whole array can be considered as one chunk
-        ax = self._obj.dims.index(dim_name)
-        return len(self._obj.chunks[ax])
-
-
-    def chunk(self, chunk: dict) -> xr.DataArray:
-        # return chunked DataArray based on camps meta vocabulary
-        chunk_dict = dict()
-        for k, v in chunk.items():
-            coord = getattr(self._obj.camps, k)
-            chunk_dict[coord.name] = v
-        return self._obj.chunk(chunk_dict)
-
-    def chunks_dict(self, chunk: dict) -> xr.DataArray:
-        # return dict that can be used for chunking based on camps meta vocabulary
-        chunk_dict = dict()
-        for k, v in chunk.items():
-            coord = getattr(self._obj.camps, k)
-            chunk_dict[coord.name] = v
-        return chunk_dict
-
-
     def to_netcdf(self, datastore, **kwargs):
         ''' write data according to name scheme
             writes are append only, cannot modify existing variables
@@ -196,26 +160,6 @@ class CampsDataarray:
         save = ds.to_netcdf(f, mode='a', **kwargs)
         return save
 
-
-
-#                while True:
-#
-#            print(name_from_var_and_scheme(array, scheme))
-#        arrays = scheme.to_store_dataset(self._obj)
-#        if os.path.exists(f):
-#            ds = xr.open_dataset(f)
-#            scheme_on_file = VarNameScheme.from_dataset(ds)
-#            ds.close()
-#            print(scheme_on_file)
-#            print(scheme)
-#            if scheme_on_file != scheme:
-#                raise ValueError('Name scheme on file does not match name scheme from datastore')
-#            # try adding to inmem dataset, will fail if issues
-#            ds['name'] = self._obj
-#            self._obj.to_netcdf(f, mode='a', **kwargs)
-#        else:
-#            scheme.to_netcdf(f)
-
     def split_based_on_scheme(self, scheme) -> list:
         ''' split self array based on var naming scheme '''
         arrays = [self._obj]
@@ -228,34 +172,3 @@ class CampsDataarray:
             arrays = temp_arrays
             temp_arrays = list()
         return arrays
-
-
-filters = list()
-
-def filter(f):
-    filters.append(f)
-    return f
-
-@filter
-def forecast_reference_time(data: xr.DataArray, var: camps.Variable) -> xr.DataArray:
-    if var.reference_time is None:
-        return data
-    else:
-        #reference_time, _ = data.camps.dim_ax_from_standard_name('forecast_reference_time')
-        reference_time = 'reference_time'
-        return data.loc[{reference_time: var.reference_time}]
-
-@filter
-def time(data: xr.DataArray, var: camps.Variable) -> xr.DataArray:
-    dim_name = meta_pieces['time'].coord_name(data)
-    if dim_name is None or dim_name not in data.dims:
-        return data
-    else:
-        return data.loc[{dim_name:var.time}]
-
-@filter
-def lead_time(data: xr.DataArray, var: camps.Variable) -> xr.DataArray:
-    if var.lead_time is None:
-        return data
-    else:
-        return data.sel(lead_time=var.lead_time)
