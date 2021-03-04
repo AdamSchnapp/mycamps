@@ -78,7 +78,6 @@ def smooth2d_block(da: xr.DataArray, dims, **kwargs) -> xr.DataArray:
 
 @actor
 def smooth2d(da: Var,
-             dims=('x', 'y'),
              datastore: DataStore = None, chunks: dict = None,
              **kwargs) -> xr.DataArray:
     '''
@@ -87,25 +86,21 @@ def smooth2d(da: Var,
     Metadata attrs are adjusted according to camps metadata conventions.
     '''
 
-    if len(dims) != 2:
-        raise ValueError(f'dims {dims} is not length two')
-
     if isinstance(da, camps.Variable):
         da = da(datastore=datastore, chunks=chunks, **kwargs)
     else:
         if chunks:
             da = da.camps.chunk(chunks)
 
-    dim0, _ = da.camps.dim_ax(dims[0])
-    dim1, _ = da.camps.dim_ax(dims[1])
-    dims = (dim0, dim1)
-    kwargs['dims'] = dims  # kwargs are passed to smooth2d_block
+    x = da.camps.x.name
+    y = da.camps.y.name
 
-    for dim in dims:
-        n_chunks = da.camps.nchunks_spanning_dim(dim)
-        if n_chunks > 1:
-            raise ValueError(f'Expected chunks spanning dim "{dim}" to be one, but was {n_chunks};'
-                             f' chunked data may not span dim "{dim}" with multiple chunks')
+    # rechunk so that multiple chunks don't span x and y dims
+    if da.chunks is not None:
+        da = da.chunk({x:-1, y:-1})
+
+    dims = (x, y)
+    kwargs['dims'] = dims  # kwargs are passed to smooth2d_block
 
     da = xr.map_blocks(smooth2d_block, da, kwargs=kwargs, template=da)
 
@@ -123,15 +118,12 @@ def wind_speed_from_uv(da=None, *, u: Var,
     if da is not None:
         raise ValueError('wind_speed_from_uv cannot consume data except for u and v')
 
-    if not datastore:
-        raise ValueError('no datastore provided; so cannot get U or V wind components')
-
     uv_options = dict(datastore=datastore)
     if chunks:
         uv_options['chunks'] = chunks
 
     if isinstance(u, camps.Variable):
-        u = u(**uv_options)
+        u = u(datastore=datastore, chunks=chunks, **kwargs)
     elif isinstance(u, xr.DataArray):
         if chunks:
             u = u.camps.chunk(chunks)
@@ -139,7 +131,7 @@ def wind_speed_from_uv(da=None, *, u: Var,
         raise ValueError('v argument must be passed as a camps.Variable or xr.DataArray')
 
     if isinstance(v, camps.Variable):
-        v = v(**uv_options)
+        v = v(datastore=datastore, chunks=chunks, **kwargs)
     elif isinstance(u, xr.DataArray):
         if chunks:
             v = v.camps.chunk(chunks)
@@ -193,7 +185,8 @@ def to_stations(da: Var, *, stations: pd.DataFrame,
     y = da.camps.y.name
 
     # rechunk so that multiple chunks don't span x and y dims
-    da = da.chunk({x:-1, y:-1})
+    if da.chunks is not None:
+        da = da.chunk({x:-1, y:-1})
 
     # lat and lon coord names could be the same as x, y for mercator grid
     lon = da.camps.longitude.name
@@ -265,7 +258,7 @@ def to_stations(da: Var, *, stations: pd.DataFrame,
         stations = stations.reset_index()
         stations.index.set_names('station', inplace=True)
         # assign the new coords
-        da = da.assign_coords({'platform_id': stations.platform_id})
+        da = da.assign_coords({'platform_id': stations.call})
         da.platform_id.attrs['standard_name'] = 'platform_id'
 
         # prep lat/lon coords with 'station' call index  ## previously I was indexing by platform_id, but platform id is not strictly a cf "coordinate variable" based on NUG because it is not numeric
@@ -334,7 +327,8 @@ def interp_to_isosurfaces(da: Var, *,
 
 
     # rechunk so that multiple chunks don't span z dim
-    da = da.camps.chunk({'z':-1})
+    if da.chunks is not None:
+        da = da.camps.chunk({'z':-1})
 
     if da.coords.keys() != level_data.coords.keys():
         raise ValueError('data and level variable coords do not match')
