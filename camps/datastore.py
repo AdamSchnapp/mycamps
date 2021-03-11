@@ -23,7 +23,7 @@ class DataStore(ABC):
 
         API methods
             in_handle(self, var: camps.Variable): -> file or collection of files that form multi-file dataset to read from
-                'in handle is responsible for providing files that can be opened via xr.open_mfdataset'
+                'in handle is responsible for providing confugration to xr.open_mfdataset for access to data'
 
             out_handle(self, var: camps.Variable, scheme=None): -> single file to write to
                 'out handle is responsible for providing the file to write to'
@@ -54,7 +54,7 @@ class SimpleDataStore(DataStore):
         return self._in_handle
 
     def out_handle(self, var: camps.Variable):
-        return self._in_handle
+        return self._out_handle
 
     def __repr__(self):
         ''' show how datastore was initialized '''

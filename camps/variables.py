@@ -121,48 +121,35 @@ class Variable(dict):
     units: str = None
     valid_min: Number = None
     valid_max: Number = None
-#    coordinate_variables: list = None
-#    OM__observedProperty: str = None
-#    SOSA__usedProcedure: list = None
-    # possible dim variables are array dimensions when not part of variable name
-#    dims_possible = ['reference_time',
-#                    'lead_time',
-#                    'pressure',
-#                    'height',
-#                    'duration',
-#                    'threshold']
+
+    x = PdIndex()
+    y = PdIndex()
+    z = PdIndex()
     reference_time: pd.DatetimeIndex = DatetimeIndex()
     reference_time_of_day: pd.TimedeltaIndex = TimedeltaIndex()
     lead_time: pd.TimedeltaIndex = TimedeltaIndex()
     time: pd.DatetimeIndex = DatetimeIndex()
     time_of_day: pd.TimedeltaIndex = TimedeltaIndex()
-    lead_time: pd.TimedeltaIndex = TimedeltaIndex()
+
     duration: pd.TimedeltaIndex = TimedeltaIndex()
     pressure = PdIndex()
     height = PdIndex()
+    x = PdIndex()
+    y = PdIndex()
+    z = PdIndex()
     latitude: pd.Index = PdIndex()
     longitude: pd.Index = PdIndex()
     threshold = PdIndex()
-    SOSA__usedProcedure = None
     observed_property: pd.Index = PdIndex()
 
-    camps_multistep: camps.MultiStep = None  # this is the instruction set
 
-#    @property
-#    def reference_time_of_day(self) -> np.ndarray:  # cycle
-#        if self.reference_time:
-#            return np.unique(dates.time)
-
-#    @property
-#    def time_of_day(self) -> np.ndarray:
-#        if self.time:
-#            return np.unique(dates.time)
-
-
-    def __init__(self, *args, **kwargs):
+    def __init__(self, meta_dict=None, *args, **kwargs):
         super().__init__()
         self.__dict__ = self
-        self.meta_filters_ = list()
+        self.meta_filters_ = list()  # keep track of which metadata types would have their filters used
+        print(meta_dict)
+        if meta_dict is not None:
+            self.update(meta_dict)
         #self.name = name
 
     @classmethod
@@ -171,41 +158,51 @@ class Variable(dict):
         v.update(registry['variables'][reg_name])
         return v
 
-    def __call__(self, data=None, *, datastore=None, in_handle=None, out_handle=None, out=False, chunks: dict=None, **kwargs):
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        setattr(self, key, value)
+
+    def update(self, other=None):
+        if other is not None:
+            for k, v in other.items():
+                setattr(self, k, v)
+
+
+
+    def __call__(self, data=None, *, in_handle=None, datastore=None, **kwargs):
         ''' Variable behaves like an actor; call will yield lazy data, but does not consume data like other actors '''
         if data:
             raise ValueError('Variable calls do not take data')  # Variables behave as actors that don't take inputs
 
-#        if out:
-#            if not out_handle:
-#                out_handle = datastore.out_handle(self)
         if not in_handle:
             if datastore:
                 in_handle = datastore.in_handle(self)
                 print(f'in_handle: {in_handle}')
             else:
-                # case where no input provided; maybe can be created out of this air!
+                # case where no input provided; maybe can be created out of thin air!
                 raise ValueError("in_handle can't be discovered")
                 pass  # invoke instruction to try creating without inputs
                 # return data/access to lazy data
 
         options = dict()
-        if chunks:
+        if 'chunks' in in_handle:
             # pre open dataset to determine dims that are to be chunked
-            pre = xr.open_dataset(in_handle)
-            var_name = pre.camps.var_name(self)
-            options['chunks'] = pre[var_name].camps.chunks_dict(chunks)
-            pre.close()
+            #if isinstance(in_handle[files], str):
+            #    one_file = in_handle[files]
+            #pre = xr.open_dataset(one_file)
+            #var_name = pre.camps.var_name(self)
+            #in_handle['chunks'] = pre[var_name].camps.chunks_dict(chunks)
+            #pre.close()
             # always use open_mfdataset when chunks included  # mf dataset seems to incur some overhead when accessing single files
-            if len(options['chunks']) == 0:
-                logger.warning('Opening up dataset(s) as a dask array without chunking; things may go wrong or be slow')
-            ds = xr.open_mfdataset(in_handle, **options)
+            #if len(options['chunks']) == 0:
+            #    logger.warning('Opening up dataset(s) as a dask array without chunking; things may go wrong or be slow')
+            #ds = xr.open_mfdataset(**in_handle)
+            raise NotImplementedError('turned off capability to chunk on variable call for now')
 
         else:
             # always use open_dataset when chunk ommited
             logger.info('Opening up dataset without chunking; computation might perfporm actively from here as data will be numpy arrays until chunked')
-            ds = xr.open_dataset(in_handle, **options)
-
+            ds = xr.open_dataset(**in_handle)
         a = ds.camps[self]  # select array of interest ; this applies filters/selection based on metadata attached to self
 
         return a

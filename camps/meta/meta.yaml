@@ -1,31 +1,30 @@
-reference_time:  # Name in camps software
-  coord_attr:
+reference_time:  # Name in camps software; camps controled vocabulary for this type of metadata
+  coord_attr: # if a variable has one of these attributes it will be determined to be of this metadata type; when this variable is written, these attributes should be accessed for inclusion when creating this
     standard_name: forecast_reference_time
-    #  non_coord_attr:
+    PROV__specializationOf: '( StatPP__Data/Time/FcstRefTime )'
+    #  non_coord_attr:  # the ommision of this attribute will result in this meta type being retained as a unit dim and coord
 
 reference_time_of_day:  # Name in camps software
+  # coord_attr is ommited because this is not a metatype that can read from file; instead this is derived... implemented in the meta type class
   non_coord_attr: reference_cycle
 
 lead_time:
   coord_attr:
     standard_name: forecast_period
-
-valid_time:
-  coord_attr:
-    standard_name: time
-  derived_from: [reference_time, lead_time]
+    PROV__specializationOf: '( StatPP__Data/Time/LeadTime )'
 
 time:
   coord_attr:
     standard_name: time
+    PROV__specializationOf: '( SOSA__phenomenonTime )'
   non_coord_attr: time
 
 observed_property:
-  coord_attr: # on read, ony coord attr is switch for identifying meta, all used on write
+  coord_attr:
     camps_name: observed_property
   depreciated_coord_attr: # only relevant to read
     old_camps_name: observed_property
-  non_coord_attr: observed_property  # let pressence of non_coord_attr indicate should be ommited as dim/coord when not multiple
+  non_coord_attr: SOSA__observed_property  # let pressence of non_coord_attr indicate should be ommited as dim/coord when not multiple
   depreciated_non_coord_attrs: [old_coord_names]  # depreciated non_coord_attrs need to be separated to allow omission of non_coord_attr, could be relevant to reading
 
 smooth_type:

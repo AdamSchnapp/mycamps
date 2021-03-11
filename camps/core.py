@@ -22,7 +22,7 @@ class CampsDataset:
             print(f'producing variable name based on variable name scheme on dataset: {var.name}')
             scheme = VarNameScheme.from_dataset(self._obj)
             print(f'scheme: {scheme}')
-            name = name_from_var_and_scheme(var, scheme)  #  change None to be the scheme on the file once implemented
+            name = name_from_var_and_scheme(var, scheme)
             print(f'name based on scheme: {name}')
             return name
 
@@ -108,7 +108,6 @@ class CampsDataarray:
 
         raise ValueError(f'No dimension exists with standard_name: {standard_name}')
 
-#   cf_xarray has access by standard name for some names
     def coord_name_from_attr_(self, attr_key, attr_val) -> str:
         ''' return the name of array coordinate based on attribute key and val '''
         coord_return = None

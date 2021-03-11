@@ -124,7 +124,7 @@ def wind_speed_from_uv(da=None, *, u: Var,
 
     if isinstance(u, camps.Variable):
         u = u(datastore=datastore, chunks=chunks, **kwargs)
-    elif isinstance(u, xr.DataArray):
+    elif isinstance(u, xr.Dataset):
         if chunks:
             u = u.camps.chunk(chunks)
     else:
@@ -132,17 +132,17 @@ def wind_speed_from_uv(da=None, *, u: Var,
 
     if isinstance(v, camps.Variable):
         v = v(datastore=datastore, chunks=chunks, **kwargs)
-    elif isinstance(u, xr.DataArray):
+    elif isinstance(u, xr.Dataset):
         if chunks:
             v = v.camps.chunk(chunks)
     else:
         raise ValueError('v argument must be passed as a camps.Variable or xr.DataArray')
 
     # check that the passed u component is expected
-    if u.attrs['standard_name'] != 'eastward_wind':
+    if u.data_var.attrs['standard_name'] != 'eastward_wind':
        raise ValueError(f'variable passed as u {u} is not eastward_wind')
     # check that the passed v component is expected and agrees with u
-    if v.attrs['standard_name'] != 'northward_wind':
+    if v.data_var.attrs['standard_name'] != 'northward_wind':
        raise ValueError(f'variable passed as v {v} is not northward_wind')
 
     speed = xr.apply_ufunc(lambda u, v: np.sqrt(u**2 + v**2), u, v, dask='allowed')
