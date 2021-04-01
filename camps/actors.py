@@ -187,6 +187,7 @@ def to_stations(da: Var, *, stations: pd.DataFrame,
     # rechunk so that multiple chunks don't span x and y dims
     if da.chunks is not None:
         da = da.chunk({x:-1, y:-1})
+        da = da.unify_chunks()
 
     # lat and lon coord names could be the same as x, y for mercator grid
     lon = da.camps.longitude.name
