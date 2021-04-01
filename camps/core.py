@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import cf_xarray
 import xarray as xr
 import pandas as pd
 from camps.variables import Variable
@@ -9,6 +8,10 @@ from camps.meta import meta, meta_types
 import os
 from collections.abc import Iterable
 from dask.base import tokenize
+try:
+    import cf_xarray
+except ImportError:
+    pass
 
 @xr.register_dataset_accessor("camps")
 class CampsDataset:
@@ -36,9 +39,15 @@ class CampsDataset:
     def __getitem__(self, var) -> xr.DataArray:
         if isinstance(var, camps.Variable):
             name = self.var_name(var)
-            return self._obj.cf[name].camps.select(var)
+            try:
+                return self._obj.cf[name].camps.select(var)
+            except:
+                return self._obj[name].camps.select(var)
         else:
-            return self._obj.cf[var]
+            try:
+                return self._obj.cf[var]
+            except:
+                return self._obj[var]
 
     @property
     def name_scheme(self):
