@@ -1,1 +1,1 @@
-from .meta import meta_config, meta_pieces
+from .meta import meta_config, meta_types

@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 import camps
-from camps.meta import meta, meta_pieces
+from camps.meta import meta, meta_types
 import xarray as xr
 from itertools import product
 ''' names will implement name schemes.
@@ -35,10 +35,10 @@ class VarNameScheme:
         scheme = list()
         max_len = list()
         for meta in self.pieces:
-            if meta not in meta_pieces:
+            if meta not in meta_types:
                 raise ValueError(f'coder {meta} does not exist')
-            length += meta_pieces[meta].max_len
-            max_len.append(meta_pieces[meta].max_len)
+            length += meta_types[meta].max_len
+            max_len.append(meta_types[meta].max_len)
             scheme.append(meta)
             length += len(self.sep)  # Seperator
 
@@ -72,7 +72,7 @@ scheme = VarNameScheme(['observed_property'])
 def name_from_var_and_scheme(var, scheme) -> str:
         name_pieces = list()
         for piece in scheme.pieces:
-            meta_piece = meta_pieces[piece]
+            meta_piece = meta_types[piece]
             decoded_value = meta_piece.decoded_value(var)
             if decoded_value is None:  # the data doesn't have this piece of meta, let be empty string
                 encoded_value = '#'

@@ -5,7 +5,7 @@ import pandas as pd
 from camps.variables import Variable
 from camps.names import name_from_var_and_scheme, VarNameScheme
 import camps
-from camps.meta import meta, meta_pieces
+from camps.meta import meta, meta_types
 import os
 from collections.abc import Iterable
 from dask.base import tokenize
@@ -46,7 +46,7 @@ class CampsDataset:
 
 #class Time:
 #    def __get__(self, obj, objtype=None):
-#        meta_piece = meta_pieces['time']
+#        meta_piece = meta_types['time']
 #        try:
 #            return obj._obj[meta_piece.coord_name(obj._obj)]
 #        except MayBeDerivedError:
@@ -58,11 +58,11 @@ class Coord:
         self.name = name
 
     def __get__(self, obj, objtype=None):
-        coord_name = meta_pieces[self.name].coord_name(obj._obj)
+        coord_name = meta_types[self.name].coord_name(obj._obj)
         if coord_name:
             return obj._obj[coord_name]
         else:
-            raise KeyError(f'no metadata coord for "{name}"')
+            raise KeyError(f'no metadata coord for "{self.name}"')
 
 
 @xr.register_dataarray_accessor("camps")
@@ -77,6 +77,7 @@ class CampsDataarray:
     x = Coord()
     y = Coord()
     z = Coord()
+    station = Coord()
 
 
     def __init__(self, xarray_obj):
@@ -90,8 +91,8 @@ class CampsDataarray:
 
     def select(self, var):
         ''' Return selection of variable from DataArray as DataArray '''
-        #filters = list(meta_pieces.values())
-        filters = [meta_pieces[meta] for meta in var.meta_filters_]
+        #filters = list(meta_types.values())
+        filters = [meta_types[meta] for meta in var.meta_filters_]
         a = filters[0].select(self._obj, var)
         for filter in filters[1:]:
             a = filter.select(a, var)
@@ -124,6 +125,14 @@ class CampsDataarray:
             return coord_return
 
         raise KeyError(f'No coordinate exists with {attr_key}: {attr_val}')
+
+    @property
+    def is_station(self):
+        try:
+            self._obj.camps.station
+            return True
+        except KeyError:
+            return False
 
 
     def to_netcdf(self, datastore, **kwargs):
@@ -164,7 +173,7 @@ class CampsDataarray:
         arrays = [self._obj]
         temp_arrays = list()
         for meta_piece_name in scheme.pieces:
-            meta_piece = meta_pieces[meta_piece_name]
+            meta_piece = meta_types[meta_piece_name]
             for arr in arrays:
                 arr = meta_piece.split_array(arr)
                 temp_arrays.extend(arr)

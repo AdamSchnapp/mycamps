@@ -12,6 +12,8 @@ lead_time:
   coord_attr:
     standard_name: forecast_period
     PROV__specializationOf: '( StatPP__Data/Time/LeadTime )'
+  depreciated_coord_attr: # only relevant to read
+    standard_name: time_period
 
 time:
   coord_attr:
@@ -58,3 +60,6 @@ y:
 z:
   coord_attr:
     axis: Z
+station:
+  coord_attr:
+    standard_name: platform_id

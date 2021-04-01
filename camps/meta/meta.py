@@ -1,17 +1,25 @@
 import pathlib
+import logging
 import yaml
 import xarray as xr
 import camps
 from camps.helpers import UniqueValDict, ClassRegistry, removeprefix
 from abc import ABC, abstractmethod
 import datetime
+from abc import ABC, abstractmethod
+import yaml
 import numpy as np
 import pandas as pd
+import xarray as xr
+import camps
+from camps.helpers import ClassRegistry
+
+logger = logging.getLogger(__name__)
 
 META = pathlib.Path(__file__).parent.absolute()
 
 class MetaConfig(dict):
-    ''' Implements access to camps core metadata configuration
+    ''' Implements access to camps metadata configuration
     '''
     def __init__(self, **kwargs):
         ''' Load meta.yaml file '''
@@ -27,11 +35,9 @@ class MetaConfig(dict):
 
 meta_config = MetaConfig()
 
-#class MayBeDerivedError(Exception):
-#    ''' raise when meta coord_attr cannot be found and derived_from exists '''
-#    pass
 
-class MetaPiece(ABC, ClassRegistry):
+class MetaType(ABC, ClassRegistry):
+    ''' Metadata types are name spaces for behavior '''
     ''' Metadata coders translate metadata into strings that can be used in the variable name.
         They must be able to encode the native metadata to a string with known max_length
         They must also be able to introspect and divide by metadata based on configuration
@@ -62,13 +68,20 @@ class MetaPiece(ABC, ClassRegistry):
                     return coord_name
                 except KeyError:  # occurrs when attr does not correspond to a coord
                     pass  # let return be None when there isn't one
+        if 'depreciated_coord_attr' in meta:
+            for k, v in meta['depreciated_coord_attr'].items():
+                try:
+                    coord_name = array.camps.coord_name_from_attr_(k, v)
+                    return coord_name
+                except KeyError:  # occurrs when attr does not correspond to a coord
+                    pass  # let return be None when there isn't one
 
 
     @classmethod
     def val_from_array_attr(self, array: xr.DataArray):
-        ''' return the value from this piece of metadata if it is expressed via an attr;
+        ''' return the value from this type of metadata if it is expressed via an attr;
             if it is not expressed as a value via an attribute, return None;
-            this does not exclude this piece of metadata being expressed as a coord.
+            this does not exclude this type of metadata being expressed as a coord.
         '''
         meta = meta_config[self.meta_name]
         if 'non_coord_attr' in meta:
@@ -87,7 +100,7 @@ class MetaPiece(ABC, ClassRegistry):
 
     @classmethod
     def decoded_value(self, var) -> str:
-        ''' given a blob of metadata as an xr.DataArray or camps.Variable determine the value of this piece of metadata
+        ''' given a blob of metadata as an xr.DataArray or camps.Variable determine the value of this type of metadata
             Raise an error if the metablob expresses more than one of this type. (this meta type is a coord of len > 1)'''
         if isinstance(var, xr.DataArray):
             decoded_value = self.val_from_array_attr(var)
@@ -114,27 +127,35 @@ class MetaPiece(ABC, ClassRegistry):
     def select_one(self, array, coord_name, value) -> xr.DataArray:
         ''' select a unit slice of the metadata type and arrange attrs/coords based on meta config '''
         if 'non_coord_attr' in meta_config[self.meta_name]:
-            # non coord attr is a switch to ommit this metapiece as a unit dimension
+            # non coord attr is a switch to ommit this MetaType as a unit dimension
             non_coord_attr = meta_config[self.meta_name]['non_coord_attr']
             a = array.loc[{coord_name: value}].drop(coord_name)
             a.attrs[non_coord_attr] = str(value)
         else:
-            # ommision of 'non_coord_attr' is switch to retain this metapiece as a unit dimension
+            # ommision of 'non_coord_attr' is switch to retain this MetaType as a unit dimension
             a = array.loc[{coord_name: pd.Index([value])}]
         return a
 
     @classmethod
     def select(self, data: xr.DataArray, var: camps.Variable) -> xr.DataArray:
         ''' select this metadata types values from data '''
+        meta = meta_config[self.meta_name]
         dim_name = self.coord_name(data)
         if dim_name is None or dim_name not in data.dims:
             return data
+        elif 'non_coord_attr' in meta:
+            v = getattr(var, self.meta_name)
+            if len(v) > 1:
+                return data.loc[{dim_name: v}]
+            elif len(v) == 1:
+                data.attrs[meta['non_coord_attr']] = str(v[0])
+                return data.loc[{dim_name: v[0]}]
         else:
             return data.loc[{dim_name: getattr(var,self.meta_name)}]
 
     @classmethod
     def split_array(self, array) -> list:
-        ''' split array based on meta piece '''
+        ''' split array based on meta type '''
         coord_name = self.coord_name(array)
         return_arrays = list()
         if coord_name:
@@ -146,10 +167,10 @@ class MetaPiece(ABC, ClassRegistry):
         return return_arrays
 
 
-meta_pieces = MetaPiece._class_registry
+meta_types = MetaType._class_registry
 
 
-class Property(MetaPiece, default_name='observed_property'):
+class Property(MetaType, default_name='observed_property'):
     # max len is relative for making name schemes, encoded string should not exceed max_len
     max_len = 40
     meta_name = 'observed_property'
@@ -165,7 +186,7 @@ class Property(MetaPiece, default_name='observed_property'):
 
 
 
-#class Smoothing(MetaPiece):
+#class Smoothing(MetaType):
 #    max_len = 4  # up to three characters after the prefix
 #    prefix = 's' # the prefix is to assist human readability and identifying which parts of the name
 #    meta_attr = smoothing
@@ -180,7 +201,7 @@ class Property(MetaPiece, default_name='observed_property'):
 #        return f'{self.prefix}{encoded}'
 #
 #
-#class Duration(MetaPiece):
+#class Duration(MetaType):
 #    max_len = 4
 #    prefix = 'd'
 #    meta_attr = duration
@@ -192,7 +213,7 @@ class Property(MetaPiece, default_name='observed_property'):
 #    def encode(self, decoded_str):
 #        return self.prefix + self.encode_mapping[decoded_str]
 
-class ReferenceTime(MetaPiece, default_name='reference_time'):
+class ReferenceTime(MetaType, default_name='reference_time'):
     max_len = 12
     meta_name = 'reference_time'
 
@@ -205,12 +226,12 @@ class ReferenceTime(MetaPiece, default_name='reference_time'):
 
 #    def select_one(self, array, coord_name, value) -> xr.DataArray:
 #        if 'non_coord_attr' in meta[self.meta_name]:
-#            # non coord attr is a switch to ommit this metapiece as a unit dimension
+#            # non coord attr is a switch to ommit this MetaType as a unit dimension
 #            non_coord_attr = meta[self.meta_name]
 #            a = a.loc[{coord_name: value}]
 #            a.attrs[non_coord_attr] = value
 #        else:
-#            # ommision of 'non_coord_attr' is switch to retain this metapiece as a unit dimension
+#            # ommision of 'non_coord_attr' is switch to retain this MetaType as a unit dimension
 #            if self.meta_type == 'datetime':
 #                a = a.loc[{coord_name: pd.DatetimeIndex([value])}]
 #            else:
@@ -218,7 +239,7 @@ class ReferenceTime(MetaPiece, default_name='reference_time'):
 
 
 
-class ReferenceTimeOfDay(MetaPiece, default_name='reference_time_of_day'):
+class ReferenceTimeOfDay(MetaType, default_name='reference_time_of_day'):
     max_len = 8
     meta_name = 'reference_time_of_day'
 
@@ -232,7 +253,7 @@ class ReferenceTimeOfDay(MetaPiece, default_name='reference_time_of_day'):
     # It may be used to filter reference_time
     @classmethod
     def select(self, data: xr.DataArray, var: camps.Variable) -> xr.DataArray:
-        reference_time_name = meta_pieces['reference_time'].coord_name(data)
+        reference_time_name = meta_types['reference_time'].coord_name(data)
         if reference_time_name is None:
             raise ValueError('No reference_time metadata, therefore cannot filter by {self.meta_name}')
         reference_time = pd.DatetimeIndex(data.camps.reference_time.to_series())
@@ -257,9 +278,9 @@ class ReferenceTimeOfDay(MetaPiece, default_name='reference_time_of_day'):
     def val_from_array_attr(self, array: xr.DataArray):
         ''' for forecast_reference_time_of_day return timedelta derived from reference_time if only one reference_time exists
             do not actually reference variable attributes as they do not support
-            return the value from this piece of metadata if it is expressed via an attr;
+            return the value from this type of metadata if it is expressed via an attr;
             if it is not expressed as a value via an attribute, return None;
-            this does not exclude this piece of metadata being expressed as a coord.
+            this does not exclude this type of metadata being expressed as a coord.
         '''
         ref_times_of_day = array.camps.reference_time - array.camps.reference_time.dt.floor('d')
         n_unique_time = len(np.unique(ref_times_of_day))
@@ -271,8 +292,8 @@ class ReferenceTimeOfDay(MetaPiece, default_name='reference_time_of_day'):
 
     @classmethod
     def split_array(self, array) -> list:
-        ''' split array based on meta piece '''
-        reference_time_name = meta_pieces['reference_time'].coord_name(array)
+        ''' split array based on meta type '''
+        reference_time_name = meta_types['reference_time'].coord_name(array)
         if reference_time_name is None:
             return [array]
         reference_time = pd.DatetimeIndex(array.camps.reference_time.to_series())
@@ -289,7 +310,7 @@ class ReferenceTimeOfDay(MetaPiece, default_name='reference_time_of_day'):
         return return_arrays
 
 
-class Time(MetaPiece, default_name='time'):
+class Time(MetaType, default_name='time'):
     max_len = 12
     meta_name = 'time'
 
@@ -308,8 +329,8 @@ class Time(MetaPiece, default_name='time'):
         if dim_name is not None and dim_name in data.dims:
             return data.loc[{dim_name: getattr(var,self.meta_name)}]
 
-        reference_time_name = meta_pieces['reference_time'].coord_name(data)
-        lead_time_name = meta_pieces['lead_time'].coord_name(data)
+        reference_time_name = meta_types['reference_time'].coord_name(data)
+        lead_time_name = meta_types['lead_time'].coord_name(data)
         if reference_time_name and lead_time_name:
             if 'time' not in data.coords:
                 # trust that if time is already a coord that it is ref + lead
@@ -320,7 +341,7 @@ class Time(MetaPiece, default_name='time'):
 
         return data
 
-class LeadTime(MetaPiece, default_name='lead_time'):
+class LeadTime(MetaType, default_name='lead_time'):
     max_len = 12
     meta_name = 'lead_time'
 
@@ -329,7 +350,7 @@ class LeadTime(MetaPiece, default_name='lead_time'):
         td = pd.to_timedelta(time)
         return str(td.seconds)
 
-class Latitude(MetaPiece, default_name='latitude'):
+class Latitude(MetaType, default_name='latitude'):
     max_len = 6
     meta_name = 'latitude'
 
@@ -337,7 +358,7 @@ class Latitude(MetaPiece, default_name='latitude'):
     def encode(self, lat):
         return str(lat)
 
-class Longitude(MetaPiece, default_name='longitude'):
+class Longitude(MetaType, default_name='longitude'):
     max_len = 7
     meta_name = 'longitude'
 
@@ -345,7 +366,7 @@ class Longitude(MetaPiece, default_name='longitude'):
     def encode(self, lon):
         return str(lon)
 
-class X(MetaPiece, default_name='x'):
+class X(MetaType, default_name='x'):
     max_len = 6
     meta_name = 'x'
 
@@ -353,7 +374,7 @@ class X(MetaPiece, default_name='x'):
     def encode(self, x):
         raise ValueError('Do not use meta {self.meta_name} in name scheme')
 
-class Y(MetaPiece, default_name='y'):
+class Y(MetaType, default_name='y'):
     max_len = 6
     meta_name = 'y'
 
@@ -361,7 +382,7 @@ class Y(MetaPiece, default_name='y'):
     def encode(self, y):
         raise ValueError('Do not use meta {self.meta_name} in name scheme')
 
-class Z(MetaPiece, default_name='z'):
+class Z(MetaType, default_name='z'):
     max_len = 6
     meta_name = 'z'
 
@@ -369,7 +390,15 @@ class Z(MetaPiece, default_name='z'):
     def encode(self, y):
         raise NotImplementedError
 
-#class TimeOfDay(MetaPiece, default_name='time_of_day'):
+class Station(MetaType, default_name='station'):
+    max_len = 8
+    meta_name = 'station'
+
+    @classmethod
+    def encode(self, y):
+        raise NotImplementedError
+
+#class TimeOfDay(MetaType, default_name='time_of_day'):
 #    max_len = 6
 #    prefix = 't'
 #
