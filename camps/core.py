@@ -6,6 +6,7 @@ from camps.names import name_from_var_and_scheme, VarNameScheme
 import camps
 from camps.meta import meta, meta_types
 import os
+from copy import copy
 from collections.abc import Iterable
 from dask.base import tokenize
 try:
@@ -84,7 +85,9 @@ class CampsDataarray:
     latitude = Coord()
     longitude = Coord()
     x = Coord()
+    projx = Coord()
     y = Coord()
+    projy = Coord()
     z = Coord()
     station = Coord()
 
@@ -142,6 +145,13 @@ class CampsDataarray:
             return True
         except KeyError:
             return False
+
+    @property
+    def grid_mapping(self):
+
+        if 'grid_mapping' in self._obj.attrs:
+            name = self._obj.attrs['grid_mapping']
+            return copy(self._obj[name].attrs)
 
 
     def to_netcdf(self, datastore, **kwargs):
