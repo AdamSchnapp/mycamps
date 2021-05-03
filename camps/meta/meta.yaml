@@ -53,13 +53,24 @@ x:
   coord_attr:
     standard_name: projection_x_coordinate
     axis: X
+
+projx:
+  coord_attr:
+    standard_name: projection_x_coordinate
+
 y:
   coord_attr:
     standard_name: projection_y_coordinate
     axis: Y
+
+projy:
+  coord_attr:
+    standard_name: projection_y_coordinate
+
 z:
   coord_attr:
     axis: Z
+
 station:
   coord_attr:
     standard_name: platform_id

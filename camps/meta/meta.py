@@ -374,9 +374,25 @@ class X(MetaType, default_name='x'):
     def encode(self, x):
         raise ValueError('Do not use meta {self.meta_name} in name scheme')
 
+class Projx(MetaType, default_name='projx'):
+    max_len = 6
+    meta_name = 'projx'
+
+    @classmethod
+    def encode(self, x):
+        raise ValueError('Do not use meta {self.meta_name} in name scheme')
+
 class Y(MetaType, default_name='y'):
     max_len = 6
     meta_name = 'y'
+
+    @classmethod
+    def encode(self, y):
+        raise ValueError('Do not use meta {self.meta_name} in name scheme')
+
+class Projy(MetaType, default_name='projy'):
+    max_len = 6
+    meta_name = 'projy'
 
     @classmethod
     def encode(self, y):
