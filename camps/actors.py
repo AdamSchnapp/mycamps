@@ -7,8 +7,11 @@ import dask.delayed
 from itertools import product
 from scipy import signal
 from copy import copy
-import camps
+import metpy
+from metpy.plots.mapping import CFProjection
+from pyproj import Proj
 from scipy.spatial import cKDTree
+import camps
 from camps.datastore import DataStore
 from typing import Union, List
 from numbers import Number
@@ -170,8 +173,6 @@ def edge(a):
     s4 = a[0,::-1][:-1]
     return np.concatenate((s1,s2,s3,s4))
 
-
-@actor
 def to_stations(da: Var, *, stations: pd.DataFrame,
                 datastore: DataStore = None, chunks: dict = None, **kwargs) -> xr.DataArray:
 
@@ -181,54 +182,82 @@ def to_stations(da: Var, *, stations: pd.DataFrame,
         if chunks:
             da = da.camps.chunk(chunks)
 
-    x = da.camps.x.name
-    y = da.camps.y.name
+    # Determine x and y
+    # Use Projected crs as common crs for grid and station
+
+    try:
+        x = da.camps.projx.name
+        y = da.camps.projy.name
+    except KeyError:
+        # projected coordinates do not exist
+        if da.camps.grid_mapping:
+            # try to make them from grid_mapping and lat/lons
+            da = da.metpy.assign_crs(da.camps.grid_mapping)
+            da = da.metpy.assign_y_x()
+            da = da.drop('metpy_crs')
+            x = da.camps.projx.name
+            y = da.camps.projy.name
+        else:
+            # exception for mercator data without grid_mapping
+            lat = da.camps.latitude
+            if lat.ndim == 1:
+                y = lat.name
+            lon = da.camps.longitude
+            if lon.ndim == 1:
+                x = lon.name
+
+            # ensure longitude expressed as degrees east from prime meridian with -179 and 180 bounds
+            lon_attrs = lon.attrs
+            da[lon.name] = xr.where(lon > 180, lon - 360, lon)
+            da[lon.name].attrs = lon_attrs
+
+            # Add the lat lon grid mapping since it didn't have one
+            # Latitude and longitude on the WGS 1984 datum
+            lat_lon_wgs84 = {'grid_mapping_name' : "latitude_longitude",
+                'longitude_of_prime_meridian' : 0.0,
+                'semi_major_axis' : 6378137.0,
+                'inverse_flattening' : 298.257223563}
+            gm = xr.DataArray()
+            gm.attrs.update(lat_lon_wgs84)
+            da = da.assign_coords({'lat_lon_wgs84': gm})
+            da.attrs['grid_mapping'] = 'lat_lon_wgs84'
+
+    pyproj_crs = CFProjection(da.camps.grid_mapping).to_pyproj()
+    stations['x'], stations['y'] = Proj(pyproj_crs)(stations.lon.values, stations.lat.values)
 
     # rechunk so that multiple chunks don't span x and y dims
     if da.chunks is not None:
         da = da.chunk({x:-1, y:-1})
         da = da.unify_chunks()
 
-    # lat and lon coord names could be the same as x, y for mercator grid
-    lon = da.camps.longitude.name
-    lat = da.camps.latitude.name
+    # load x,y data
+    da[x].load()
+    da[y].load()
 
-    if lon in da.indexes or lat in da.indexes:
-        da = da.reset_index([lon, lat])
-        lon = da.camps.longitude.name
-        lat = da.camps.latitude.name
+    # make horizonontal space 1-D by stacking x and y
+    stacked = da.stack(xy=(x,y))
+    gridxy = np.column_stack((stacked[x].data, stacked[y].data))
 
-    # ensure longitude degrees are consistently represented numerically; could use projection coords in future.
-    da[lon].load()
-    lon_attrs = da[lon].attrs
-    da[lon] = xr.where(da[lon] > 180, da[lon] - 360, da[lon])
-    da[lon].attrs = lon_attrs
-    # stations are already -179 to 180
+    stationxy = np.column_stack((stations.x, stations.y))
 
-    # make a grid polygon on the lat/lon crs
+    tree = cKDTree(gridxy) # fast nearest neighbor search algorith
+    dist_ix = tree.query(stationxy) # find distance to nearest and index of nearest
+
+    # make a grid polygon
     from shapely.geometry import Polygon, MultiPoint, Point
-    if da[lon].ndim == 1:
-        unit_lats = xr.DataArray(np.ones(da[lat].shape), dims=da[lat].dims)
-        unit_lons = xr.DataArray(np.ones(da[lon].shape), dims=da[lon].dims)
-        edge_lon = edge(da[lon] * unit_lats)  # broadcast constant lon along the lat dim
-        edge_lat = edge(unit_lons * da[lat])  # broadcast constant lat along the lon dim
-    else:
-        edge_lon = edge(da[lon])
-        edge_lat = edge(da[lat])
+    unit_y = xr.DataArray(np.ones(da[y].shape), dims=da[y].dims)
+    unit_x = xr.DataArray(np.ones(da[x].shape), dims=da[x].dims)
+    edge_x = edge(da[x] * unit_y)  # broadcast constant x along the y dim
+    edge_y = edge(unit_x * da[y])  # broadcast constant y along the x dim
 
-    import cartopy.crs as ccrs
-    #xyz = ccrs.PlateCarree().transform_points(ccrs.PlateCarree(), edge_lon, edge_lat)
-    #xy = zip(xyz[:,0], xyz[:,1])
-    xy = zip(edge_lon, edge_lat)
+    xy = zip(edge_x, edge_y)
     grid_polygon = Polygon(xy)
 
-    # make station multipoint shapely object on the same lat/lon crs
-    #xyz = ccrs.PlateCarree().transform_points(ccrs.PlateCarree(), stations.lon.values, stations.lat.values)
-    #xy = zip(xyz[:,0], xyz[:,1])
-    xy = zip(stations.lon.values, stations.lat.values)
+    # make station points
+    xy = zip(stations.x.values, stations.y.values)
     station_points = MultiPoint(list(xy))
 
-    # determine which platform_ids lie outside grid domain
+    # determine which stations lie outside grid domain (polygon)
     stations['point_str'] = pd.Series([str(p) for p in station_points])
     stations['ix'] = stations.index
     points_outside_grid = station_points - station_points.intersection(grid_polygon)
@@ -239,74 +268,47 @@ def to_stations(da: Var, *, stations: pd.DataFrame,
     else:
         ix_stations_outside_grid = list() # let be empty list
 
-    ###################
-    # Prep the template
-    ###################
-    template = da.copy()
+    print(len(ix_stations_outside_grid))
+    def nearest_worker(da: xr.DataArray, *, x, y, ix, ix_nan) -> xr.DataArray:
+        da = da.stack(station=(x, y))  # squash the horizontal space dims into one
 
+        da = da.isel(station=ix)
+        da = da.drop_vars('station')  # remove station coord
+        da.loc[{'station': ix_nan}] = np.nan  # use integer index location to set stations outside grid to missing
+
+        return da
+    # make template for expressing the change in shape in map_blocks
+    template = da.copy()
     # reshape action
     template = template.stack(station=(x, y))  # combine the lat/lon dims into one dim called station
     template = template.isel(station=[0]*len(stations))  # select only the first; this removes the dim station
     template = template.drop('station')  # drop the multiindex lat/lon coord associated with 'station' from the 0th grid point
 
+    mb_kwargs = dict(x=x, y=y, ix=dist_ix[1], ix_nan=ix_stations_outside_grid)
+    da = xr.map_blocks(nearest_worker, da, kwargs=mb_kwargs, template=template)
 
-    def config_meta(da, stations, x, y, lon, lat):
-        # remove metadata related to the grid grid
-        da = da.drop_vars([x, y], errors='ignore')
-        da = da.drop_vars([lon, lat], errors='ignore')
+    # remove any metadata that may be leftover from the grid
+    da = da.drop_vars([x, y], errors='ignore')
 
-        # prep station coord with 'station' numeric index
-        stations = stations.reset_index()
-        stations.index.set_names('station', inplace=True)
-        # assign the new coords
-        da = da.assign_coords({'platform_id': stations.call})
-        da.platform_id.attrs['standard_name'] = 'platform_id'
+    # configure station metadata
+    # prep station coord with numeric index called 'station'
+    stations = stations.reset_index()
+    stations.index.set_names('station', inplace=True)
+    # assign the new coords
+    da = da.assign_coords({'platform_id': stations.call})
+    da.platform_id.attrs['standard_name'] = 'platform_id'
 
-        # prep lat/lon coords with 'station' call index  ## previously I was indexing by platform_id, but platform id is not strictly a cf "coordinate variable" based on NUG because it is not numeric
-        #stations = stations.set_index('platform_id')
-        #stations.index.set_names('station', inplace=True)
+    # assign the new coords with numeric index
+    da = da.assign_coords({'lat': stations.lat})
+    da.lat.attrs['standard_name'] = 'latitude'
+    da.lat.attrs['units'] = 'degrees_north'
+    da = da.assign_coords({'lon': stations.lon})
+    da.lon.attrs['standard_name'] = 'longitude'
+    da.lon.attrs['units'] = 'degrees_east'
+    # drop the numeric index;
+    da = da.reset_index('station', drop=True)
 
-        # assign the new coords with arbitrary integer index
-        da = da.assign_coords({'lat': stations.lat})
-        da.lat.attrs['standard_name'] = 'latitude'
-        da.lat.attrs['units'] = 'degrees_noth'
-        da = da.assign_coords({'lon': stations.lon})
-        da.lon.attrs['standard_name'] = 'longitude'
-        da.lon.attrs['units'] = 'degrees_east'
-
-        # drop the numeric station index coordinate (for cf NUG conventions... station is described by auxiliarry coordinate variable with standard name platform_id)
-        da = da.reset_index('station', drop=True)
-
-        return da
-
-    template = config_meta(template, stations, x, y, lon, lat)
-    # end preping the template
-
-    def nearest_worker(da: xr.DataArray, *, stations, x, y, lon, lat) -> xr.DataArray:
-        da = da.stack(station=(x, y))  # squash the horizontal space dims into one
-        gridlonlat = np.column_stack((da[lon].data, da[lat].data))  # array of lon/lat pairs of gridpoints # not a lazy version of column_stack
-        stationlonlat = np.column_stack((stations.lon, stations.lat))  # array of lon/lat pairs of stations
-
-        tree = cKDTree(gridlonlat)  # kdtree is fast search of nearest neighbor (lat/lon crs)
-        dist_ix = tree.query(stationlonlat)  # find the distance (degrees since lat/lon crs) and index of the nearest gridpoint to each station
-
-        da = da.isel(station=dist_ix[1])
-        da = da.drop_vars('station')  # remove station coord
-        da.loc[{'station': ix_stations_outside_grid}] = np.nan  # use integer index location to set stations outside grid to missing
-
-        da = config_meta(da, stations, x, y, lon, lat)  # add the station metadata to the already created array
-        return da
-
-    kwargs['stations'] = stations
-    kwargs['x'] = x
-    kwargs['y'] = y
-    kwargs['lon'] = lon
-    kwargs['lat'] = lat
-    data = xr.map_blocks(nearest_worker, da, kwargs=kwargs, template=template)
-
-
-    return data
-
+    return da
 
 @actor
 def interp_to_isosurfaces(da: Var, *,

@@ -8,7 +8,7 @@ def test_basic():
     ds = xr.tutorial.open_dataset('air_temperature')
 
     stations = """
-    platform_id lat        lon
+    call        lat        lon
     KBWI        39.1833    -76.6667
     KAVL        35.4333    -82.5500
     KDAB        29.1833    -81.0500
